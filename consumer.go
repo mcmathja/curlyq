@@ -22,6 +22,7 @@ type Consumer struct {
 
 	// Computed properties
 	id          string
+	client      *redis.Client
 	queue       *queue
 	inflightSet string
 	processes   sync.WaitGroup
@@ -39,7 +40,11 @@ type Consumer struct {
 
 // ConsumerOpts exposes options used when creating a new Consumer.
 type ConsumerOpts struct {
-	// Client is the go-redis instance used to communicate with Redis.
+	// Address specifies the address of the Redis backing your queue.
+	// CurlyQ will generate a go-redis instance based on this address.
+	Address string
+	// Client is a custom go-redis instance used to communicate with Redis.
+	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
 	// Queue specifies the name of the queue that this consumer will consume from.
 	Queue string
@@ -140,7 +145,7 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 // NewConsumer instantiates a new Consumer.
 func NewConsumer(opts *ConsumerOpts) *Consumer {
 	// Required arguments
-	if opts.Client == nil {
+	if opts.Address == "" && opts.Client == nil {
 		panic("A redis client must be provided.")
 	}
 
@@ -148,7 +153,16 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		panic("A queue must be provided.")
 	}
 
-	// Set up ID and paths
+	// Computed properties
+	var client *redis.Client
+	if opts.Client != nil {
+		client = opts.Client
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr: opts.Address,
+		})
+	}
+
 	id := uuid.Must(uuid.NewV4()).String()
 	queue := newQueue(&queueOpts{
 		Name: opts.Queue,
@@ -170,6 +184,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		opts: opts.withDefaults(),
 
 		id:          id,
+		client:      client,
 		queue:       queue,
 		inflightSet: inflightSet,
 
@@ -491,7 +506,7 @@ func (c *Consumer) runCustodian(ctx context.Context) {
 // It returns a boolean indicating if the job was successfully acked.
 // It returns an error if the Redis script fails.
 func (c *Consumer) ackJob(ctx context.Context, job *Job) (bool, error) {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,
@@ -509,7 +524,7 @@ func (c *Consumer) ackJob(ctx context.Context, job *Job) (bool, error) {
 // It returns the number of jobs that were scheduled.
 // It returns an error if the Redis script fails.
 func (c *Consumer) enqueueScheduledJobs(ctx context.Context) (int, error) {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.queue.scheduledJobsSet,
@@ -528,7 +543,7 @@ func (c *Consumer) enqueueScheduledJobs(ctx context.Context) (int, error) {
 // It returns a slice of Jobs for this consumer to process on success.
 // It returns an error if the Redis script fails or it cannot parse the job data.
 func (c *Consumer) getJobs(ctx context.Context, count int) ([]*Job, error) {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.queue.activeJobsList,
@@ -571,7 +586,7 @@ func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
 		return false, err
 	}
 
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,
@@ -591,7 +606,7 @@ func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
 // reenqueueActiveJobs reschedules jobs that are still unstarted at shutdown.
 // It returns an error if the Redis script fails.
 func (c *Consumer) reenqueueActiveJobs(ctx context.Context, jobs []*Job) error {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,
@@ -610,7 +625,7 @@ func (c *Consumer) reenqueueActiveJobs(ctx context.Context, jobs []*Job) error {
 // It returns the total number of jobs that were rescheduled.
 // It returns an error if the Redis script fails.
 func (c *Consumer) reenqueueOrphanedJobs(ctx context.Context) (int, error) {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.queue.consumersSet,
@@ -629,7 +644,7 @@ func (c *Consumer) reenqueueOrphanedJobs(ctx context.Context) (int, error) {
 // registerConsumer marks a consumer as active and visible to other consumers.
 // It returns an error if the Redis script fails.
 func (c *Consumer) registerConsumer(ctx context.Context) error {
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.queue.consumersSet,
@@ -655,7 +670,7 @@ func (c *Consumer) retryJob(ctx context.Context, job *Job) (bool, error) {
 		return false, err
 	}
 
-	client := c.opts.Client.WithContext(ctx)
+	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,

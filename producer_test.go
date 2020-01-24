@@ -47,13 +47,43 @@ var _ = Describe("Producer", func() {
 			})
 
 			It("Returns a valid producer", func() {
-				Expect(producer.opts.Client).To(Equal(client))
-				Expect(producer.opts.Queue).To(Equal(queue))
+				Expect(producer.client).To(Equal(client))
+				Expect(producer.queue.name).To(Equal(queue))
 			})
 
 			It("Loads all of the expected Lua scripts", func() {
 				Expect(producer.pushJobScript).NotTo(BeNil())
 				Expect(producer.scheduleJobScript).NotTo(BeNil())
+			})
+		})
+
+		Context("When an Address is provided", func() {
+			It("Generates a client based on the Address", func() {
+				producer = NewProducer(&ProducerOpts{
+					Address: server.Addr(),
+					Queue:   queue,
+				})
+
+				Expect(producer.client).NotTo(Equal(client))
+
+				err := client.Set("a", "b", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				val, err := producer.client.Get("a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("b"))
+			})
+
+			Context("When a Client is also provided", func() {
+				It("Uses the provided value for Client", func() {
+					producer = NewProducer(&ProducerOpts{
+						Address: "some.random.address",
+						Client:  client,
+						Queue:   queue,
+					})
+
+					Expect(producer.client).To(Equal(client))
+				})
 			})
 		})
 

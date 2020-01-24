@@ -12,7 +12,8 @@ import (
 type Producer struct {
 	opts *ProducerOpts
 
-	queue *queue
+	client *redis.Client
+	queue  *queue
 
 	pushJobScript     *redis.Script
 	scheduleJobScript *redis.Script
@@ -20,7 +21,11 @@ type Producer struct {
 
 // ProducerOpts exposes options used when creating a new Producer.
 type ProducerOpts struct {
-	// Client is the go-redis instance used to communicate with Redis.
+	// Address specifies the address of the Redis backing your queue.
+	// CurlyQ will generate a go-redis instance based on this address.
+	Address string
+	// Client is a custom go-redis instance used to communicate with Redis.
+	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
 	// Queue specifies the name of the queue that this producer will push to.
 	Queue string
@@ -29,7 +34,7 @@ type ProducerOpts struct {
 // NewProducer instantiates a new Producer.
 func NewProducer(opts *ProducerOpts) *Producer {
 	// Required arguments
-	if opts.Client == nil {
+	if opts.Address == "" && opts.Client == nil {
 		panic("A redis client must be provided.")
 	}
 
@@ -37,7 +42,16 @@ func NewProducer(opts *ProducerOpts) *Producer {
 		panic("A queue name must be provided.")
 	}
 
-	// Set up paths
+	// Computed properties
+	var client *redis.Client
+	if opts.Client != nil {
+		client = opts.Client
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr: opts.Address,
+		})
+	}
+
 	queue := newQueue(&queueOpts{
 		Name: opts.Queue,
 	})
@@ -51,7 +65,8 @@ func NewProducer(opts *ProducerOpts) *Producer {
 		opts: opts,
 
 		// Computed properties
-		queue: queue,
+		client: client,
+		queue:  queue,
 
 		// Scripts
 		pushJobScript:     pushJobScript,
@@ -113,7 +128,7 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 		return "", err
 	}
 
-	client := p.opts.Client.WithContext(ctx)
+	client := p.client.WithContext(ctx)
 
 	keys := []string{
 		p.queue.jobDataHash,
@@ -142,7 +157,7 @@ func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (stri
 		return "", err
 	}
 
-	client := p.opts.Client.WithContext(ctx)
+	client := p.client.WithContext(ctx)
 
 	keys := []string{
 		p.queue.jobDataHash,

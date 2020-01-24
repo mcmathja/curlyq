@@ -50,8 +50,8 @@ var _ = Describe("Consumer", func() {
 			})
 
 			It("Returns a valid consumer", func() {
-				Expect(consumer.opts.Client).To(Equal(client))
-				Expect(consumer.opts.Queue).To(Equal(queue))
+				Expect(consumer.client).To(Equal(client))
+				Expect(consumer.queue.name).To(Equal(queue))
 
 				id, err := uuid.FromString(consumer.id)
 				Expect(err).NotTo(HaveOccurred())
@@ -84,6 +84,36 @@ var _ = Describe("Consumer", func() {
 				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
 				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
 				Expect(consumer.opts.SchedulerMaxJobs).To(Equal(uint(50)))
+			})
+		})
+
+		Context("When an Address is provided", func() {
+			It("Generates a client based on the Address", func() {
+				consumer = NewConsumer(&ConsumerOpts{
+					Address: server.Addr(),
+					Queue:   queue,
+				})
+
+				Expect(consumer.client).NotTo(Equal(client))
+
+				err := client.Set("a", "b", 0).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				val, err := consumer.client.Get("a").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal("b"))
+			})
+
+			Context("When a Client is also provided", func() {
+				It("Uses the provided value for Client", func() {
+					consumer = NewConsumer(&ConsumerOpts{
+						Address: "some.random.address",
+						Client:  client,
+						Queue:   queue,
+					})
+
+					Expect(consumer.client).To(Equal(client))
+				})
 			})
 		})
 
