@@ -6,6 +6,7 @@ import (
 
 	"github.com/alicebob/miniredis"
 	"github.com/go-redis/redis"
+	"github.com/gofrs/uuid"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -81,7 +82,7 @@ var _ = Describe("Producer", func() {
 
 	Describe("Public API", func() {
 		var producer *Producer
-		var job *Job
+		var job Job
 
 		BeforeEach(func() {
 			producer = NewProducer(&ProducerOpts{
@@ -89,7 +90,7 @@ var _ = Describe("Producer", func() {
 				Queue:  queue,
 			})
 
-			job = &Job{
+			job = Job{
 				ID:   "TestID",
 				Data: []byte("TestData"),
 			}
@@ -103,8 +104,9 @@ var _ = Describe("Producer", func() {
 			})
 
 			It("Creates a new job and schedules it to run after the provided duration", func() {
-				err := producer.PerformAfter(job, duration)
+				id, err := producer.PerformAfter(duration, job)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal(job.ID))
 
 				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -128,12 +130,29 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					err := producer.PerformAfter(job, duration)
+					id, err := producer.PerformAfter(duration, job)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(id).To(Equal(job.ID))
 
 					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+				})
+			})
+
+			Context("When an ID is not provided", func() {
+				BeforeEach(func() {
+					job = Job{
+						Data: []byte("TestData"),
+					}
+				})
+
+				It("Generates one", func() {
+					id, err := producer.PerformAfter(duration, job)
+					Expect(job.ID).To(Equal(""))
+
+					_, err = uuid.FromString(id)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
@@ -143,7 +162,7 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Returns an error", func() {
-					err := producer.PerformAfter(job, duration)
+					_, err := producer.PerformAfter(duration, job)
 					Expect(err).To(HaveOccurred())
 				})
 			})
@@ -157,8 +176,9 @@ var _ = Describe("Producer", func() {
 			})
 
 			It("Creates a new job and schedules it to run after the provided duration", func() {
-				err := producer.PerformAt(job, moment)
+				id, err := producer.PerformAt(moment, job)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal(job.ID))
 
 				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -178,12 +198,29 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					err := producer.PerformAt(job, moment)
+					id, err := producer.PerformAt(moment, job)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(id).To(Equal(job.ID))
 
 					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+				})
+			})
+
+			Context("When an ID is not provided", func() {
+				BeforeEach(func() {
+					job = Job{
+						Data: []byte("TestData"),
+					}
+				})
+
+				It("Generates one", func() {
+					id, err := producer.PerformAt(moment, job)
+					Expect(job.ID).To(Equal(""))
+
+					_, err = uuid.FromString(id)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
@@ -193,16 +230,17 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Returns an error", func() {
-					err := producer.PerformAt(job, moment)
+					_, err := producer.PerformAt(moment, job)
 					Expect(err).To(HaveOccurred())
 				})
 			})
 		})
 
-		Describe("PerformNow", func() {
+		Describe("Perform", func() {
 			It("Creates a new job and schedules it to run after the provided duration", func() {
-				err := producer.PerformNow(job)
+				id, err := producer.Perform(job)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal(job.ID))
 
 				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -220,12 +258,29 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					err := producer.PerformNow(job)
+					id, err := producer.Perform(job)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(id).To(Equal(job.ID))
 
 					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+				})
+			})
+
+			Context("When an ID is not provided", func() {
+				BeforeEach(func() {
+					job = Job{
+						Data: []byte("TestData"),
+					}
+				})
+
+				It("Generates one", func() {
+					id, err := producer.Perform(job)
+					Expect(job.ID).To(Equal(""))
+
+					_, err = uuid.FromString(id)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
@@ -235,7 +290,7 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Returns an error", func() {
-					err := producer.PerformNow(job)
+					_, err := producer.Perform(job)
 					Expect(err).To(HaveOccurred())
 				})
 			})
@@ -245,7 +300,7 @@ var _ = Describe("Producer", func() {
 	Describe("Redis operations", func() {
 		Describe("pushJob", func() {
 			var producer *Producer
-			var job *Job
+			var job Job
 			var ctx context.Context
 
 			BeforeEach(func() {
@@ -255,15 +310,16 @@ var _ = Describe("Producer", func() {
 				})
 
 				ctx = context.Background()
-				job = &Job{
+				job = Job{
 					ID:   "TestID",
 					Data: []byte("TestData"),
 				}
 			})
 
 			It("Creates a new job and enqueues it", func() {
-				err := producer.pushJob(ctx, job)
+				id, err := producer.pushJob(ctx, job)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal(job.ID))
 
 				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -281,12 +337,29 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					err := producer.pushJob(ctx, job)
+					id, err := producer.pushJob(ctx, job)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(id).To(Equal(job.ID))
 
 					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+				})
+			})
+
+			Context("When an ID is not provided", func() {
+				BeforeEach(func() {
+					job = Job{
+						Data: []byte("TestData"),
+					}
+				})
+
+				It("Generates one", func() {
+					id, err := producer.pushJob(ctx, job)
+					Expect(job.ID).To(Equal(""))
+
+					_, err = uuid.FromString(id)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
@@ -296,7 +369,7 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Returns an error", func() {
-					err := producer.pushJob(ctx, job)
+					_, err := producer.pushJob(ctx, job)
 					Expect(err).To(HaveOccurred())
 				})
 			})
@@ -304,7 +377,7 @@ var _ = Describe("Producer", func() {
 
 		Describe("scheduleJob", func() {
 			var producer *Producer
-			var job *Job
+			var job Job
 			var ctx context.Context
 			var at time.Time
 
@@ -315,7 +388,7 @@ var _ = Describe("Producer", func() {
 				})
 
 				ctx = context.Background()
-				job = &Job{
+				job = Job{
 					ID:   "TestID",
 					Data: []byte("TestData"),
 				}
@@ -323,8 +396,9 @@ var _ = Describe("Producer", func() {
 			})
 
 			It("Creates a new job and schedules it", func() {
-				err := producer.scheduleJob(ctx, job, at)
+				id, err := producer.scheduleJob(ctx, at, job)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal(job.ID))
 
 				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -342,12 +416,29 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					err := producer.scheduleJob(ctx, job, at)
+					id, err := producer.scheduleJob(ctx, at, job)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(id).To(Equal(job.ID))
 
 					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+				})
+			})
+
+			Context("When an ID is not provided", func() {
+				BeforeEach(func() {
+					job = Job{
+						Data: []byte("TestData"),
+					}
+				})
+
+				It("Generates one", func() {
+					id, err := producer.scheduleJob(ctx, at, job)
+					Expect(job.ID).To(Equal(""))
+
+					_, err = uuid.FromString(id)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
@@ -357,7 +448,7 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Returns an error", func() {
-					err := producer.scheduleJob(ctx, job, at)
+					_, err := producer.scheduleJob(ctx, at, job)
 					Expect(err).To(HaveOccurred())
 				})
 			})

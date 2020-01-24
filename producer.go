@@ -52,37 +52,43 @@ func NewProducer(opts *ProducerOpts) *Producer {
 
 // PerformAfter enqueues a job to be performed after a certain amount of time.
 // It calls to Redis using a default background context.
-func (p *Producer) PerformAfter(job *Job, duration time.Duration) error {
-	return p.PerformAfterCtx(context.Background(), job, duration)
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) PerformAfter(duration time.Duration, job Job) (string, error) {
+	return p.PerformAfterCtx(context.Background(), duration, job)
 }
 
 // PerformAfterCtx enqueues a job to be performed after a certain amount of time.
 // It calls to Redis using a user-supplied context.
-func (p *Producer) PerformAfterCtx(ctx context.Context, job *Job, duration time.Duration) error {
-	return p.PerformAtCtx(ctx, job, time.Now().Add(duration))
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) PerformAfterCtx(ctx context.Context, duration time.Duration, job Job) (string, error) {
+	return p.PerformAtCtx(ctx, time.Now().Add(duration), job)
 }
 
 // PerformAt calls PerformAtCtx with a default context.
 // It calls to Redis using a default background context.
-func (p *Producer) PerformAt(job *Job, at time.Time) error {
-	return p.PerformAtCtx(context.Background(), job, at)
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) PerformAt(at time.Time, job Job) (string, error) {
+	return p.PerformAtCtx(context.Background(), at, job)
 }
 
 // PerformAtCtx schedules a job to be performed at a particular point in time.
 // It calls to Redis using a user-supplied context.
-func (p *Producer) PerformAtCtx(ctx context.Context, job *Job, at time.Time) error {
-	return p.scheduleJob(ctx, job, at)
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) PerformAtCtx(ctx context.Context, at time.Time, job Job) (string, error) {
+	return p.scheduleJob(ctx, at, job)
 }
 
-// PerformNow calls PerformNowCtx with a default context.
+// Perform calls PerformCtx with a default context.
 // It calls to Redis using a default background context.
-func (p *Producer) PerformNow(job *Job) error {
-	return p.PerformNowCtx(context.Background(), job)
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) Perform(job Job) (string, error) {
+	return p.PerformCtx(context.Background(), job)
 }
 
-// PerformNowCtx enqueues a job to be performed as soon as possible.
+// PerformCtx enqueues a job to be performed as soon as possible.
 // It calls to Redis using a user-supplied context.
-func (p *Producer) PerformNowCtx(ctx context.Context, job *Job) error {
+// It returns the ID of the enqueued job when successful or an error otherwise.
+func (p *Producer) PerformCtx(ctx context.Context, job Job) (string, error) {
 	return p.pushJob(ctx, job)
 }
 
@@ -90,10 +96,10 @@ func (p *Producer) PerformNowCtx(ctx context.Context, job *Job) error {
 
 // pushJob pushes a job onto the active queue.
 // It returns error if the Redis script fails or it cannot marshal the job.
-func (p *Producer) pushJob(ctx context.Context, job *Job) error {
+func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 	msg, err := job.message()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	client := p.opts.Client.WithContext(ctx)
@@ -110,19 +116,19 @@ func (p *Producer) pushJob(ctx context.Context, job *Job) error {
 
 	err = p.pushJobScript.Run(client, keys, args...).Err()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	log.Printf("Enqueued job: %s", job.ID)
-	return nil
+	return job.ID, nil
 }
 
 // scheduleJob inserts the job into the scheduled set.
 // It returns error if the Redis script fails or it cannot marshal the job.
-func (p *Producer) scheduleJob(ctx context.Context, job *Job, at time.Time) error {
+func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (string, error) {
 	msg, err := job.message()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	client := p.opts.Client.WithContext(ctx)
@@ -140,9 +146,9 @@ func (p *Producer) scheduleJob(ctx context.Context, job *Job, at time.Time) erro
 
 	err = p.scheduleJobScript.Run(client, keys, args...).Err()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	log.Printf("Scheduled job: %s at %s", job.ID, at.Format(time.RFC1123Z))
-	return nil
+	return job.ID, nil
 }
