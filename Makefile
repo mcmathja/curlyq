@@ -1,5 +1,6 @@
 package:
 	pkger
+	go fmt
 
 build: package
 	go build ./...

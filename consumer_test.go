@@ -17,7 +17,7 @@ import (
 
 var _ = Describe("Consumer", func() {
 	var client *redis.Client
-	var queue *Queue
+	var queue string
 	var server *miniredis.Miniredis
 
 	BeforeEach(func() {
@@ -30,9 +30,7 @@ var _ = Describe("Consumer", func() {
 		})
 		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 
-		queue = NewQueue(&QueueOpts{
-			Name: "test",
-		})
+		queue = "test_queue"
 	})
 
 	AfterEach(func() {
@@ -58,7 +56,7 @@ var _ = Describe("Consumer", func() {
 				id, err := uuid.FromString(consumer.id)
 				Expect(err).NotTo(HaveOccurred())
 
-				inflightSet := fmt.Sprintf("curlyq:test:inflight:%s", id)
+				inflightSet := fmt.Sprintf("test_queue:inflight:%s", id)
 				Expect(consumer.inflightSet).To(Equal(inflightSet))
 			})
 
@@ -202,10 +200,10 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.RPush(queue.activeJobsList, job.ID).Err()
+					err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -266,10 +264,10 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.RPush(queue.activeJobsList, job.ID).Err()
+					err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -341,10 +339,10 @@ var _ = Describe("Consumer", func() {
 					hashData[job.ID] = msg
 				}
 
-				err = client.HMSet(queue.jobDataHash, hashData).Err()
+				err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.RPush(queue.activeJobsList, jobIDs...).Err()
+				err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -386,7 +384,7 @@ var _ = Describe("Consumer", func() {
 					activeTicker := time.NewTicker(10 * time.Millisecond)
 					go func() {
 						for _ = range activeTicker.C {
-							activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 							Expect(err).NotTo(HaveOccurred())
 							active <- activeJobs
 						}
@@ -476,7 +474,7 @@ var _ = Describe("Consumer", func() {
 					retriedTicker = time.NewTicker(100 * time.Millisecond)
 					go func() {
 						for _ = range retriedTicker.C {
-							scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+							scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 							Expect(err).NotTo(HaveOccurred())
 							retried <- scheduledJobs
 						}
@@ -486,7 +484,7 @@ var _ = Describe("Consumer", func() {
 					failedTicker = time.NewTicker(100 * time.Millisecond)
 					go func() {
 						for _ = range failedTicker.C {
-							deadJobs, err := client.ZRange(queue.deadJobsSet, 0, -1).Result()
+							deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
 							Expect(err).NotTo(HaveOccurred())
 							failed <- deadJobs
 						}
@@ -622,7 +620,7 @@ var _ = Describe("Consumer", func() {
 				ticker := time.NewTicker(50 * time.Millisecond)
 				go func() {
 					for _ = range ticker.C {
-						score, err := client.ZScore(queue.consumersSet, consumer.inflightSet).Result()
+						score, err := client.ZScore(consumer.queue.consumersSet, consumer.inflightSet).Result()
 						Expect(err).NotTo(HaveOccurred())
 						lastSeenAt <- score
 					}
@@ -666,7 +664,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When scheduled jobs are ready to be run", func() {
 				addJob := func(id string, at time.Time) {
-					err := client.ZAdd(queue.scheduledJobsSet, redis.Z{
+					err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
 						Score:  float64(at.Unix()),
 						Member: id,
 					}).Err()
@@ -690,7 +688,7 @@ var _ = Describe("Consumer", func() {
 					ticker := time.NewTicker(100 * time.Millisecond)
 					go func() {
 						for _ = range ticker.C {
-							activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 							Expect(err).NotTo(HaveOccurred())
 							jobIDs <- activeJobs
 						}
@@ -757,7 +755,7 @@ var _ = Describe("Consumer", func() {
 				}
 
 				registerConsumer := func(consumer *Consumer, lastSeenAt time.Time) {
-					err := client.ZAdd(queue.consumersSet, redis.Z{
+					err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
 						Score:  float64(lastSeenAt.Unix()),
 						Member: consumer.inflightSet,
 					}).Err()
@@ -788,7 +786,7 @@ var _ = Describe("Consumer", func() {
 					ticker := time.NewTicker(100 * time.Millisecond)
 					go func() {
 						for _ = range ticker.C {
-							activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 							Expect(err).NotTo(HaveOccurred())
 							jobIDs <- activeJobs
 						}
@@ -843,7 +841,7 @@ var _ = Describe("Consumer", func() {
 				BeforeEach(func() {
 					var err error
 
-					err = client.HSet(queue.jobDataHash, job.ID, job.Data).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, job.Data).Err()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = client.SAdd(consumer.inflightSet, job.ID).Err()
@@ -855,7 +853,7 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(acked).To(Equal(true))
 
-					err = client.HGet(queue.jobDataHash, job.ID).Err()
+					err = client.HGet(consumer.queue.jobDataHash, job.ID).Err()
 					Expect(err).To(Equal(redis.Nil))
 				})
 			})
@@ -864,7 +862,7 @@ var _ = Describe("Consumer", func() {
 				BeforeEach(func() {
 					var err error
 
-					err = client.HSet(queue.jobDataHash, job.ID, job.Data).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, job.Data).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -873,7 +871,7 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(acked).To(Equal(false))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(consumer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("TestData"))
 				})
@@ -891,7 +889,7 @@ var _ = Describe("Consumer", func() {
 							at = at.Add(-5 * time.Minute)
 						}
 
-						err := client.ZAdd(queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -904,13 +902,13 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(2))
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(activeJobs)).To(Equal(2))
 					Expect(activeJobs[0]).To(Equal("job_id-1"))
 					Expect(activeJobs[1]).To(Equal("job_id-2"))
 
-					scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(2))
 					Expect(scheduledJobs[0]).To(Equal("job_id-3"))
@@ -924,7 +922,7 @@ var _ = Describe("Consumer", func() {
 						id := fmt.Sprintf("job_id-%d", i)
 						at := time.Now().Add(time.Duration(i) * time.Hour)
 
-						err := client.ZAdd(queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -937,7 +935,7 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
-					scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(4))
 					Expect(scheduledJobs[0]).To(Equal("job_id-1"))
@@ -945,7 +943,7 @@ var _ = Describe("Consumer", func() {
 					Expect(scheduledJobs[2]).To(Equal("job_id-3"))
 					Expect(scheduledJobs[3]).To(Equal("job_id-4"))
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(activeJobs)).To(Equal(0))
 				})
@@ -963,7 +961,7 @@ var _ = Describe("Consumer", func() {
 						id := fmt.Sprintf("job_id-%d", i)
 						at := time.Now().Add(-10 * time.Minute).Add(time.Duration(i) * time.Minute)
 
-						err := client.ZAdd(queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -976,14 +974,14 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(3))
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(activeJobs)).To(Equal(3))
 					Expect(activeJobs[0]).To(Equal("job_id-1"))
 					Expect(activeJobs[1]).To(Equal("job_id-2"))
 					Expect(activeJobs[2]).To(Equal("job_id-3"))
 
-					scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(1))
 					Expect(scheduledJobs[0]).To(Equal("job_id-4"))
@@ -1009,10 +1007,10 @@ var _ = Describe("Consumer", func() {
 						msg, err := job.message()
 						Expect(err).NotTo(HaveOccurred())
 
-						err = client.RPush(queue.activeJobsList, id).Err()
+						err = client.RPush(consumer.queue.activeJobsList, id).Err()
 						Expect(err).NotTo(HaveOccurred())
 
-						err = client.HSet(queue.jobDataHash, id, msg).Err()
+						err = client.HSet(consumer.queue.jobDataHash, id, msg).Err()
 						Expect(err).NotTo(HaveOccurred())
 					}
 				})
@@ -1028,7 +1026,7 @@ var _ = Describe("Consumer", func() {
 							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 						}
 
-						activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(activeJobs).To(BeEmpty())
 
@@ -1060,7 +1058,7 @@ var _ = Describe("Consumer", func() {
 							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 						}
 
-						activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(activeJobs).To(Equal([]string{
 							"job_id-2",
@@ -1109,7 +1107,7 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = client.SAdd(consumer.inflightSet, job.ID).Err()
@@ -1121,14 +1119,14 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(killed).To(Equal(true))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(consumer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
 					Expect(job.Attempt).To(Equal(uint(1)))
 
-					deadJobs, err := client.ZRange(queue.deadJobsSet, 0, -1).Result()
+					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(deadJobs).To(Equal([]string{
 						job.ID,
@@ -1147,7 +1145,7 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -1156,14 +1154,14 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(killed).To(Equal(false))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(consumer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
 					Expect(job.Attempt).To(Equal(uint(0)))
 
-					deadJobs, err := client.ZRange(queue.deadJobsSet, 0, -1).Result()
+					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(deadJobs).To(BeEmpty())
 				})
@@ -1190,7 +1188,7 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, id, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, id, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 				}
 			})
@@ -1207,7 +1205,7 @@ var _ = Describe("Consumer", func() {
 					err := consumer.reenqueueActiveJobs(ctx, jobs)
 					Expect(err).NotTo(HaveOccurred())
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(ConsistOf(job_ids))
 
@@ -1231,7 +1229,7 @@ var _ = Describe("Consumer", func() {
 					err := consumer.reenqueueActiveJobs(ctx, jobs)
 					Expect(err).NotTo(HaveOccurred())
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(ConsistOf([]string{job_ids[0], job_ids[1]}))
 
@@ -1248,11 +1246,11 @@ var _ = Describe("Consumer", func() {
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
 					Expect(count).To(Equal(0))
 
-					consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(consumers).To(BeEmpty())
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(BeEmpty())
 				})
@@ -1269,7 +1267,7 @@ var _ = Describe("Consumer", func() {
 						})
 						otherInflightSets = append(otherInflightSets, c.inflightSet)
 
-						err := client.ZAdd(queue.consumersSet, redis.Z{
+						err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
 							Score:  float64(time.Now().Unix()),
 							Member: c.inflightSet,
 						}).Err()
@@ -1286,11 +1284,11 @@ var _ = Describe("Consumer", func() {
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
 					Expect(count).To(Equal(0))
 
-					consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(consumers).To(ConsistOf(otherInflightSets))
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(BeEmpty())
 
@@ -1323,7 +1321,7 @@ var _ = Describe("Consumer", func() {
 							score = time.Now().Add(-consumer.opts.CustodianConsumerTimeout).Add(-consumer.opts.HeartbeatInterval).Add(time.Duration(-i) * time.Minute)
 						}
 
-						err := client.ZAdd(queue.consumersSet, redis.Z{
+						err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
 							Score:  float64(score.Unix()),
 							Member: c.inflightSet,
 						}).Err()
@@ -1343,11 +1341,11 @@ var _ = Describe("Consumer", func() {
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
 					Expect(count).To(Equal(2))
 
-					consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(consumers).To(ConsistOf(retainedInflightSets))
 
-					activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(ConsistOf([]string{
 						jobIDs[2],
@@ -1392,11 +1390,11 @@ var _ = Describe("Consumer", func() {
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
 						Expect(count).To(Equal(3))
 
-						consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(consumers).To(ConsistOf(retainedInflightSets))
 
-						activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(len(activeJobs)).To(Equal(3))
 						Expect(activeJobs).To(ContainElement(jobIDs[3]))
@@ -1448,11 +1446,11 @@ var _ = Describe("Consumer", func() {
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
 						Expect(count).To(Equal(1))
 
-						consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(consumers).To(ConsistOf(inflightSets))
 
-						activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(activeJobs).To(ConsistOf([]string{
 							jobIDs[3],
@@ -1485,11 +1483,11 @@ var _ = Describe("Consumer", func() {
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
 						Expect(count).To(Equal(1))
 
-						consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(consumers).To(ConsistOf(retainedInflightSets))
 
-						activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(activeJobs).To(ConsistOf([]string{
 							jobIDs[3],
@@ -1517,7 +1515,7 @@ var _ = Describe("Consumer", func() {
 					err := consumer.registerConsumer(ctx)
 					Expect(err).NotTo(HaveOccurred())
 
-					consumers, err := client.ZRange(queue.consumersSet, 0, -1).Result()
+					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(consumers).To(ConsistOf([]string{consumer.inflightSet}))
 				})
@@ -1525,7 +1523,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When the consumer was previously registered", func() {
 				BeforeEach(func() {
-					err := client.ZAdd(queue.consumersSet, redis.Z{
+					err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
 						Member: consumer.inflightSet,
 						Score:  float64(time.Now().Add(-5 * time.Minute).Unix()),
 					}).Err()
@@ -1536,7 +1534,7 @@ var _ = Describe("Consumer", func() {
 					err := consumer.registerConsumer(ctx)
 					Expect(err).NotTo(HaveOccurred())
 
-					consumers, err := client.ZRangeWithScores(queue.consumersSet, 0, -1).Result()
+					consumers, err := client.ZRangeWithScores(consumer.queue.consumersSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(consumers)).To(Equal(1))
 
@@ -1565,7 +1563,7 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = client.SAdd(consumer.inflightSet, job.ID).Err()
@@ -1577,14 +1575,14 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(retried).To(Equal(true))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(consumer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
 					Expect(job.Attempt).To(Equal(uint(7)))
 
-					scheduledJobs, err := client.ZRangeWithScores(queue.scheduledJobsSet, 0, -1).Result()
+					scheduledJobs, err := client.ZRangeWithScores(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(1))
 					Expect(scheduledJobs[0].Member).To(Equal(job.ID))
@@ -1604,7 +1602,7 @@ var _ = Describe("Consumer", func() {
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = client.HSet(queue.jobDataHash, job.ID, msg).Err()
+					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -1613,14 +1611,14 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(retried).To(Equal(false))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(consumer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
 					Expect(job.Attempt).To(Equal(uint(6)))
 
-					scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(scheduledJobs).To(BeEmpty())
 				})

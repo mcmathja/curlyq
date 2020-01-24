@@ -12,6 +12,8 @@ import (
 type Producer struct {
 	opts *ProducerOpts
 
+	queue *queue
+
 	pushJobScript     *redis.Script
 	scheduleJobScript *redis.Script
 }
@@ -20,8 +22,8 @@ type Producer struct {
 type ProducerOpts struct {
 	// Client is the go-redis instance used to communicate with Redis.
 	Client *redis.Client
-	// Queue contains details about where data is stored in Redis.
-	Queue *Queue
+	// Queue specifies the name of the queue that this producer will push to.
+	Queue string
 }
 
 // NewProducer instantiates a new Producer.
@@ -31,9 +33,14 @@ func NewProducer(opts *ProducerOpts) *Producer {
 		panic("A redis client must be provided.")
 	}
 
-	if opts.Queue == nil {
-		panic("A queue must be provided.")
+	if opts.Queue == "" {
+		panic("A queue name must be provided.")
 	}
+
+	// Set up paths
+	queue := newQueue(&queueOpts{
+		Name: opts.Queue,
+	})
 
 	// Embed Lua scripts
 	prepScripts()
@@ -43,6 +50,10 @@ func NewProducer(opts *ProducerOpts) *Producer {
 	return &Producer{
 		opts: opts,
 
+		// Computed properties
+		queue: queue,
+
+		// Scripts
 		pushJobScript:     pushJobScript,
 		scheduleJobScript: scheduleJobScript,
 	}
@@ -105,8 +116,8 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 	client := p.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		p.opts.Queue.jobDataHash,
-		p.opts.Queue.activeJobsList,
+		p.queue.jobDataHash,
+		p.queue.activeJobsList,
 	}
 
 	args := []interface{}{
@@ -134,8 +145,8 @@ func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (stri
 	client := p.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		p.opts.Queue.jobDataHash,
-		p.opts.Queue.scheduledJobsSet,
+		p.queue.jobDataHash,
+		p.queue.scheduledJobsSet,
 	}
 
 	args := []interface{}{

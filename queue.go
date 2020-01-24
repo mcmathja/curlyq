@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-type Queue struct {
+type queue struct {
 	name string
 
 	activeJobsList     string
@@ -15,29 +15,23 @@ type Queue struct {
 	scheduledJobsSet   string
 }
 
-type QueueOpts struct {
-	Name   string
-	Prefix string
+type queueOpts struct {
+	Name string
 }
 
-func NewQueue(opts *QueueOpts) *Queue {
+func newQueue(opts *queueOpts) *queue {
 	if opts.Name == "" {
 		panic("A queue name must be provided.")
 	}
 
-	basePath := fmt.Sprintf("curlyq:%s", opts.Name)
-	if opts.Prefix != "" {
-		basePath = fmt.Sprintf("%s:%s", opts.Prefix, basePath)
-	}
+	activeJobsList := fmt.Sprintf("%s:active", opts.Name)
+	consumersSet := fmt.Sprintf("%s:consumers", opts.Name)
+	deadJobsSet := fmt.Sprintf("%s:dead", opts.Name)
+	inflightJobsPrefix := fmt.Sprintf("%s:inflight", opts.Name)
+	jobDataHash := fmt.Sprintf("%s:data", opts.Name)
+	scheduledJobsSet := fmt.Sprintf("%s:scheduled", opts.Name)
 
-	activeJobsList := fmt.Sprintf("%s:active", basePath)
-	consumersSet := fmt.Sprintf("%s:consumers", basePath)
-	deadJobsSet := fmt.Sprintf("%s:dead", basePath)
-	inflightJobsPrefix := fmt.Sprintf("%s:inflight", basePath)
-	jobDataHash := fmt.Sprintf("%s:data", basePath)
-	scheduledJobsSet := fmt.Sprintf("%s:scheduled", basePath)
-
-	return &Queue{
+	return &queue{
 		name: opts.Name,
 
 		activeJobsList:     activeJobsList,

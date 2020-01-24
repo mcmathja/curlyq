@@ -20,10 +20,13 @@ import (
 type Consumer struct {
 	opts *ConsumerOpts
 
+	// Computed properties
 	id          string
+	queue       *queue
 	inflightSet string
 	processes   sync.WaitGroup
 
+	// Scripts
 	ackJobScript                *redis.Script
 	enqueueScheduledJobsScript  *redis.Script
 	getJobsScript               *redis.Script
@@ -38,8 +41,8 @@ type Consumer struct {
 type ConsumerOpts struct {
 	// Client is the go-redis instance used to communicate with Redis.
 	Client *redis.Client
-	// Queue contains details about where data is stored in Redis.
-	Queue *Queue
+	// Queue specifies the name of the queue that this consumer will consume from.
+	Queue string
 
 	// How long to wait for executors to finish before exiting forcibly.
 	// A zero value indicates that we should wait indefinitely.
@@ -141,13 +144,16 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		panic("A redis client must be provided.")
 	}
 
-	if opts.Queue == nil {
+	if opts.Queue == "" {
 		panic("A queue must be provided.")
 	}
 
-	// Set consumer-specific ID and paths
+	// Set up ID and paths
 	id := uuid.Must(uuid.NewV4()).String()
-	inflightSet := fmt.Sprintf("%s:%s", opts.Queue.inflightJobsPrefix, id)
+	queue := newQueue(&queueOpts{
+		Name: opts.Queue,
+	})
+	inflightSet := fmt.Sprintf("%s:%s", queue.inflightJobsPrefix, id)
 
 	// Embed Lua scripts
 	prepScripts()
@@ -164,6 +170,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		opts: opts.withDefaults(),
 
 		id:          id,
+		queue:       queue,
 		inflightSet: inflightSet,
 
 		ackJobScript:                ackJobScript,
@@ -488,7 +495,7 @@ func (c *Consumer) ackJob(ctx context.Context, job *Job) (bool, error) {
 
 	keys := []string{
 		c.inflightSet,
-		c.opts.Queue.jobDataHash,
+		c.queue.jobDataHash,
 	}
 
 	args := []interface{}{
@@ -505,8 +512,8 @@ func (c *Consumer) enqueueScheduledJobs(ctx context.Context) (int, error) {
 	client := c.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		c.opts.Queue.scheduledJobsSet,
-		c.opts.Queue.activeJobsList,
+		c.queue.scheduledJobsSet,
+		c.queue.activeJobsList,
 	}
 
 	args := []interface{}{
@@ -524,9 +531,9 @@ func (c *Consumer) getJobs(ctx context.Context, count int) ([]*Job, error) {
 	client := c.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		c.opts.Queue.activeJobsList,
+		c.queue.activeJobsList,
 		c.inflightSet,
-		c.opts.Queue.jobDataHash,
+		c.queue.jobDataHash,
 	}
 
 	args := []interface{}{
@@ -568,8 +575,8 @@ func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
 
 	keys := []string{
 		c.inflightSet,
-		c.opts.Queue.deadJobsSet,
-		c.opts.Queue.jobDataHash,
+		c.queue.deadJobsSet,
+		c.queue.jobDataHash,
 	}
 
 	args := []interface{}{
@@ -588,7 +595,7 @@ func (c *Consumer) reenqueueActiveJobs(ctx context.Context, jobs []*Job) error {
 
 	keys := []string{
 		c.inflightSet,
-		c.opts.Queue.activeJobsList,
+		c.queue.activeJobsList,
 	}
 
 	args := make([]interface{}, len(jobs))
@@ -606,8 +613,8 @@ func (c *Consumer) reenqueueOrphanedJobs(ctx context.Context) (int, error) {
 	client := c.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		c.opts.Queue.consumersSet,
-		c.opts.Queue.activeJobsList,
+		c.queue.consumersSet,
+		c.queue.activeJobsList,
 	}
 
 	expiredBefore := time.Now().Add(-c.opts.HeartbeatInterval).Add(-c.opts.CustodianConsumerTimeout)
@@ -625,7 +632,7 @@ func (c *Consumer) registerConsumer(ctx context.Context) error {
 	client := c.opts.Client.WithContext(ctx)
 
 	keys := []string{
-		c.opts.Queue.consumersSet,
+		c.queue.consumersSet,
 	}
 
 	args := []interface{}{
@@ -652,8 +659,8 @@ func (c *Consumer) retryJob(ctx context.Context, job *Job) (bool, error) {
 
 	keys := []string{
 		c.inflightSet,
-		c.opts.Queue.scheduledJobsSet,
-		c.opts.Queue.jobDataHash,
+		c.queue.scheduledJobsSet,
+		c.queue.jobDataHash,
 	}
 
 	args := []interface{}{

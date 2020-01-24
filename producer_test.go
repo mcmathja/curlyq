@@ -14,7 +14,7 @@ import (
 
 var _ = Describe("Producer", func() {
 	var client *redis.Client
-	var queue *Queue
+	var queue string
 	var server *miniredis.Miniredis
 
 	BeforeEach(func() {
@@ -27,9 +27,7 @@ var _ = Describe("Producer", func() {
 		})
 		Expect(client.FlushDB().Err()).NotTo(HaveOccurred())
 
-		queue = NewQueue(&QueueOpts{
-			Name: "test",
-		})
+		queue = "test_queue"
 	})
 
 	AfterEach(func() {
@@ -108,11 +106,11 @@ var _ = Describe("Producer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
 
-				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+				jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect([]byte(jobData)).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 0}))
 
-				scheduledJobs, err := client.ZRangeWithScores(queue.scheduledJobsSet, 0, -1).Result()
+				scheduledJobs, err := client.ZRangeWithScores(producer.queue.scheduledJobsSet, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(scheduledJobs)).To(Equal(1))
 				Expect(scheduledJobs[0].Member).To(Equal(job.ID))
@@ -125,7 +123,7 @@ var _ = Describe("Producer", func() {
 
 			Context("When a job with that ID already exists", func() {
 				BeforeEach(func() {
-					err := client.HSet(queue.jobDataHash, job.ID, "Preexisting Data").Err()
+					err := client.HSet(producer.queue.jobDataHash, job.ID, "Preexisting Data").Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -134,7 +132,7 @@ var _ = Describe("Producer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(id).To(Equal(job.ID))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
 				})
@@ -180,11 +178,11 @@ var _ = Describe("Producer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
 
-				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+				jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect([]byte(jobData)).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 0}))
 
-				scheduledJobs, err := client.ZRangeWithScores(queue.scheduledJobsSet, 0, -1).Result()
+				scheduledJobs, err := client.ZRangeWithScores(producer.queue.scheduledJobsSet, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(scheduledJobs)).To(Equal(1))
 				Expect(scheduledJobs[0].Member).To(Equal(job.ID))
@@ -193,7 +191,7 @@ var _ = Describe("Producer", func() {
 
 			Context("When a job with that ID already exists", func() {
 				BeforeEach(func() {
-					err := client.HSet(queue.jobDataHash, job.ID, "Preexisting Data").Err()
+					err := client.HSet(producer.queue.jobDataHash, job.ID, "Preexisting Data").Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -202,7 +200,7 @@ var _ = Describe("Producer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(id).To(Equal(job.ID))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
 				})
@@ -242,18 +240,18 @@ var _ = Describe("Producer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
 
-				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+				jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect([]byte(jobData)).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 0}))
 
-				activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+				activeJobs, err := client.LRange(producer.queue.activeJobsList, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(activeJobs).To(Equal([]string{job.ID}))
 			})
 
 			Context("When a job with that ID already exists", func() {
 				BeforeEach(func() {
-					err := client.HSet(queue.jobDataHash, job.ID, "Preexisting Data").Err()
+					err := client.HSet(producer.queue.jobDataHash, job.ID, "Preexisting Data").Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -262,7 +260,7 @@ var _ = Describe("Producer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(id).To(Equal(job.ID))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
 				})
@@ -321,18 +319,18 @@ var _ = Describe("Producer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
 
-				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+				jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect([]byte(jobData)).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 0}))
 
-				activeJobs, err := client.LRange(queue.activeJobsList, 0, -1).Result()
+				activeJobs, err := client.LRange(producer.queue.activeJobsList, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(activeJobs).To(Equal([]string{job.ID}))
 			})
 
 			Context("When a job with that ID already exists", func() {
 				BeforeEach(func() {
-					err := client.HSet(queue.jobDataHash, job.ID, "Preexisting Data").Err()
+					err := client.HSet(producer.queue.jobDataHash, job.ID, "Preexisting Data").Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -341,7 +339,7 @@ var _ = Describe("Producer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(id).To(Equal(job.ID))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
 				})
@@ -400,18 +398,18 @@ var _ = Describe("Producer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
 
-				jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+				jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect([]byte(jobData)).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 0}))
 
-				scheduledJobs, err := client.ZRange(queue.scheduledJobsSet, 0, -1).Result()
+				scheduledJobs, err := client.ZRange(producer.queue.scheduledJobsSet, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(scheduledJobs).To(Equal([]string{job.ID}))
 			})
 
 			Context("When a job with that ID already exists", func() {
 				BeforeEach(func() {
-					err := client.HSet(queue.jobDataHash, job.ID, "Preexisting Data").Err()
+					err := client.HSet(producer.queue.jobDataHash, job.ID, "Preexisting Data").Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
@@ -420,7 +418,7 @@ var _ = Describe("Producer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(id).To(Equal(job.ID))
 
-					jobData, err := client.HGet(queue.jobDataHash, job.ID).Result()
+					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
 				})
