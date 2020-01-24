@@ -1,9 +1,19 @@
-package:
-	pkger
-	go fmt
+dependencies:
+	go get github.com/markbates/pkger/cmd/pkger@v0.12.8
 
-build: package
+build:
 	go build ./...
 
-test: package
+package:
+	pkger
+
+format:
+	go fmt
+
+tidy:
+	go mod tidy
+
+test:
 	go test -race
+
+release: build package format tidy test
