@@ -168,7 +168,7 @@ var _ = Describe("Consumer", func() {
 			})
 		})
 
-		Describe("Execute", func() {
+		Describe("ConsumeCtx", func() {
 			It("Shuts down cleanly when the context is canceled", func(done Done) {
 				processErrors := make(chan error)
 				ctx, cancel := context.WithCancel(context.Background())
@@ -179,7 +179,7 @@ var _ = Describe("Consumer", func() {
 						}
 					}()
 
-					processErrors <- consumer.Execute(ctx, func(ctx context.Context, job Job) error {
+					processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
 						return nil
 					})
 				}()
@@ -219,7 +219,7 @@ var _ = Describe("Consumer", func() {
 							}
 						}()
 
-						processErrors <- consumer.Execute(ctx, func(ctx context.Context, job Job) error {
+						processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
 							time.Sleep(10 * time.Second)
 							return nil
 						})
@@ -233,7 +233,7 @@ var _ = Describe("Consumer", func() {
 			})
 		})
 
-		Describe("Run", func() {
+		Describe("Consume", func() {
 			It("Shuts down cleanly when the process is killed", func(done Done) {
 				processErrors := make(chan error)
 				go func() {
@@ -243,7 +243,7 @@ var _ = Describe("Consumer", func() {
 						}
 					}()
 
-					processErrors <- consumer.Run(func(ctx context.Context, job Job) error {
+					processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
 						return nil
 					}, syscall.SIGUSR1)
 				}()
@@ -282,7 +282,7 @@ var _ = Describe("Consumer", func() {
 							}
 						}()
 
-						processErrors <- consumer.Run(func(ctx context.Context, job Job) error {
+						processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
 							return nil
 						}, syscall.SIGUSR1)
 					}()

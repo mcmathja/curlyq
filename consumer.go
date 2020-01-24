@@ -183,10 +183,10 @@ type HandlerFunc func(context.Context, Job) error
 
 // Public API
 
-// Execute starts the consumer with a user-supplied context.
+// ConsumeCtx starts the consumer with a user-supplied context.
 // The Consumer runs indefinitely until the provided context is canceled.
 // An error is returned if the Consumer cannot shut down gracefully.
-func (c *Consumer) Execute(ctx context.Context, handler HandlerFunc) error {
+func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) error {
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
 	err := c.registerConsumer(ctx)
@@ -228,10 +228,10 @@ func (c *Consumer) Execute(ctx context.Context, handler HandlerFunc) error {
 	return nil
 }
 
-// Starts the consumer with a default context.
+// Consumer starts the consumer with a default context.
 // The Consumer runs until the process receives one of the specified signals.
 // An error is returned if the Consumer cannot shut down gracefully.
-func (c *Consumer) Run(handler HandlerFunc, signals ...os.Signal) error {
+func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 	if len(signals) == 0 {
 		signals = []os.Signal{
 			syscall.SIGINT,
@@ -243,7 +243,7 @@ func (c *Consumer) Run(handler HandlerFunc, signals ...os.Signal) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	errChan := make(chan error)
 	go func() {
-		errChan <- c.Execute(ctx, handler)
+		errChan <- c.ConsumeCtx(ctx, handler)
 	}()
 
 	// Wait until we receive a signal and then cancel the context.
