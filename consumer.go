@@ -300,7 +300,6 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	defer func() {
 		// Stop polling for jobs.
 		ticker.Stop()
-		c.opts.Logger.Debug("Executors: process shut down")
 
 		// Drain the queue of any buffered jobs that we haven't started work on.
 		close(queue)
@@ -318,6 +317,8 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 			executors <- struct{}{}
 		}
 		close(executors)
+
+		c.opts.Logger.Debug("Executors: process shut down")
 	}()
 
 	// Execution loop

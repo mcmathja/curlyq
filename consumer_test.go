@@ -195,10 +195,25 @@ var _ = Describe("Consumer", func() {
 				Client: client,
 				Queue:  queue,
 			})
+
+			job := &Job{
+				ID:      "job-1",
+				Attempt: 0,
+				Data:    []byte("A number!"),
+			}
+			msg, err := job.message()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		Describe("ConsumeCtx", func() {
-			It("Shuts down cleanly when the context is canceled", func(done Done) {
+			It("Shuts down cleanly when the context is canceled", func() {
+				startJob := make(chan struct{})
 				processErrors := make(chan error)
 				ctx, cancel := context.WithCancel(context.Background())
 				go func() {
@@ -209,36 +224,24 @@ var _ = Describe("Consumer", func() {
 					}()
 
 					processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
+						startJob <- struct{}{}
 						return nil
 					})
 				}()
 
-				time.Sleep(100 * time.Millisecond)
+				<-startJob
 				cancel()
-				Expect(<-processErrors).To(BeNil())
-				close(done)
-			}, 5.0)
+				Eventually(processErrors).Should(Receive(BeNil()))
+			})
 
 			Context("When a job runs longer than ShutdownGracePeriod", func() {
 				BeforeEach(func() {
 					consumer.opts.ShutdownGracePeriod = 500 * time.Millisecond
-
-					job := &Job{
-						ID:      "job-1",
-						Attempt: 0,
-						Data:    []byte("A number!"),
-					}
-					msg, err := job.message()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
-					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("Returns an error", func(done Done) {
+				It("Returns an error", func() {
+					startJob := make(chan struct{})
+					stopJob := make(chan struct{})
 					processErrors := make(chan error)
 					ctx, cancel := context.WithCancel(context.Background())
 					go func() {
@@ -249,21 +252,23 @@ var _ = Describe("Consumer", func() {
 						}()
 
 						processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
-							time.Sleep(10 * time.Second)
+							startJob <- struct{}{}
+							<-stopJob
 							return nil
 						})
 					}()
 
-					time.Sleep(100 * time.Millisecond)
+					<-startJob
 					cancel()
-					Expect(<-processErrors).To(HaveOccurred())
-					close(done)
+					Eventually(processErrors).Should(Receive(HaveOccurred()))
+					stopJob <- struct{}{}
 				})
 			})
 		})
 
 		Describe("Consume", func() {
-			It("Shuts down cleanly when the process is killed", func(done Done) {
+			It("Shuts down cleanly when the process is killed", func() {
+				startJob := make(chan struct{})
 				processErrors := make(chan error)
 				go func() {
 					defer func() {
@@ -273,36 +278,24 @@ var _ = Describe("Consumer", func() {
 					}()
 
 					processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
+						startJob <- struct{}{}
 						return nil
 					}, syscall.SIGUSR1)
 				}()
 
-				time.Sleep(100 * time.Millisecond)
+				<-startJob
 				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
-				Expect(<-processErrors).To(BeNil())
-				close(done)
-			}, 5.0)
+				Eventually(processErrors).Should(Receive(BeNil()))
+			})
 
 			Context("When a job runs longer than ShutdownGracePeriod", func() {
 				BeforeEach(func() {
 					consumer.opts.ShutdownGracePeriod = 500 * time.Millisecond
-
-					job := &Job{
-						ID:      "job-1",
-						Attempt: 0,
-						Data:    []byte("A number!"),
-					}
-					msg, err := job.message()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
-					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("Returns an error", func(done Done) {
+				It("Returns an error", func() {
+					startJob := make(chan struct{})
+					stopJob := make(chan struct{})
 					processErrors := make(chan error)
 					go func() {
 						defer func() {
@@ -312,14 +305,16 @@ var _ = Describe("Consumer", func() {
 						}()
 
 						processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							<-stopJob
 							return nil
 						}, syscall.SIGUSR1)
 					}()
 
-					time.Sleep(100 * time.Millisecond)
+					<-startJob
 					syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
-					Expect(<-processErrors).To(BeNil())
-					close(done)
+					Eventually(processErrors).Should(Receive(HaveOccurred()))
+					stopJob <- struct{}{}
 				})
 			})
 		})
@@ -331,51 +326,79 @@ var _ = Describe("Consumer", func() {
 		var cancel context.CancelFunc
 		var processErrors chan error
 
+		poller := func(duration time.Duration, poll func() []interface{}) (chan []interface{}, chan struct{}) {
+			resultsChan := make(chan []interface{}, 1)
+			stopChan := make(chan struct{})
+
+			ticker := time.NewTicker(duration)
+			go func() {
+				for {
+					select {
+					case <-ticker.C:
+						results := poll()
+						select {
+						case resultsChan <- results:
+						default:
+						}
+					case <-stopChan:
+						ticker.Stop()
+						return
+					}
+				}
+			}()
+
+			return resultsChan, stopChan
+		}
+
 		BeforeEach(func() {
 			ctx, cancel = context.WithCancel(context.Background())
 			processErrors = make(chan error, 0)
 		})
 
-		AfterEach(func(done Done) {
+		AfterEach(func() {
 			cancel()
 			consumer.processes.Wait()
-			Expect(<-processErrors).To(BeNil())
-			close(done)
-		}, 2.0)
+			Eventually(processErrors).Should(Receive(BeNil()))
+		})
 
 		Describe("runExecutors", func() {
-			start := func(handler HandlerFunc) {
-				consumer.processes.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
+			var start func(HandlerFunc)
+			var addJobs func(jobs []*Job)
+
+			BeforeEach(func() {
+				start = func(handler HandlerFunc) {
+					consumer.processes.Add(1)
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								processErrors <- fmt.Errorf("%v", r)
+							}
+						}()
+
+						consumer.runExecutors(ctx, handler)
+						processErrors <- nil
 					}()
-
-					consumer.runExecutors(ctx, handler)
-					processErrors <- nil
-				}()
-			}
-
-			addJobs := func(jobs []*Job) {
-				var err error
-				hashData := map[string]interface{}{}
-				jobIDs := make([]interface{}, len(jobs))
-				for idx, job := range jobs {
-					msg, err := job.message()
-					Expect(err).NotTo(HaveOccurred())
-
-					jobIDs[idx] = job.ID
-					hashData[job.ID] = msg
 				}
 
-				err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-				Expect(err).NotTo(HaveOccurred())
+				addJobs = func(jobs []*Job) {
+					var err error
+					hashData := map[string]interface{}{}
+					jobIDs := make([]interface{}, len(jobs))
+					for idx, job := range jobs {
+						msg, err := job.message()
+						Expect(err).NotTo(HaveOccurred())
 
-				err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
-				Expect(err).NotTo(HaveOccurred())
-			}
+						jobIDs[idx] = job.ID
+						hashData[job.ID] = msg
+					}
+
+					err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			})
 
 			Context("When the context is canceled", func() {
 				BeforeEach(func() {
@@ -395,8 +418,8 @@ var _ = Describe("Consumer", func() {
 					cancel()
 				})
 
-				It("Reenqueues jobs on the queue", func(done Done) {
-					stop := make(chan struct{})
+				It("Reenqueues jobs on the queue", func() {
+					stopJob := make(chan struct{})
 
 					addJobs([]*Job{
 						&Job{ID: "job-1"},
@@ -411,18 +434,20 @@ var _ = Describe("Consumer", func() {
 						&Job{ID: "job-10"},
 					})
 
-					active := make(chan []string)
-					activeTicker := time.NewTicker(10 * time.Millisecond)
-					go func() {
-						for _ = range activeTicker.C {
-							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-							Expect(err).NotTo(HaveOccurred())
-							active <- activeJobs
+					active, stopPolling := poller(100*time.Millisecond, func() []interface{} {
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
+
+						results := make([]interface{}, len(activeJobs))
+						for idx, job := range activeJobs {
+							results[idx] = job
 						}
-					}()
+
+						return results
+					})
 
 					start(func(ctx context.Context, job Job) error {
-						<-stop
+						<-stopJob
 						return nil
 					})
 
@@ -450,21 +475,20 @@ var _ = Describe("Consumer", func() {
 					})))
 
 					// Allow the in-process job to proceed.
-					stop <- struct{}{}
-					activeTicker.Stop()
-					close(done)
-				}, 5.0)
+					close(stopJob)
+					close(stopPolling)
+				})
 			})
 
 			Context("When jobs are on the queue", func() {
 				var successful chan string
 
 				var completed chan []string
-				var retried chan []string
-				var failed chan []string
+				var retried chan []interface{}
+				var failed chan []interface{}
 
-				var retriedTicker *time.Ticker
-				var failedTicker *time.Ticker
+				var stopPollingRetried chan struct{}
+				var stopPollingFailed chan struct{}
 
 				handler := func(ctx context.Context, job Job) error {
 					id, err := strconv.Atoi(job.ID)
@@ -501,33 +525,37 @@ var _ = Describe("Consumer", func() {
 						}
 					}()
 
-					retried = make(chan []string)
-					retriedTicker = time.NewTicker(100 * time.Millisecond)
-					go func() {
-						for _ = range retriedTicker.C {
-							scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
-							Expect(err).NotTo(HaveOccurred())
-							retried <- scheduledJobs
-						}
-					}()
+					retried, stopPollingRetried = poller(100*time.Millisecond, func() []interface{} {
+						scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 
-					failed = make(chan []string)
-					failedTicker = time.NewTicker(100 * time.Millisecond)
-					go func() {
-						for _ = range failedTicker.C {
-							deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
-							Expect(err).NotTo(HaveOccurred())
-							failed <- deadJobs
+						results := make([]interface{}, len(scheduledJobs))
+						for idx, job := range scheduledJobs {
+							results[idx] = job
 						}
-					}()
+
+						return results
+					})
+
+					failed, stopPollingFailed = poller(100*time.Millisecond, func() []interface{} {
+						deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
+
+						results := make([]interface{}, len(deadJobs))
+						for idx, job := range deadJobs {
+							results[idx] = job
+						}
+
+						return results
+					})
 				})
 
 				AfterEach(func() {
-					failedTicker.Stop()
-					retriedTicker.Stop()
+					close(stopPollingFailed)
+					close(stopPollingRetried)
 				})
 
-				It("Processes jobs that are already on the queue when it starts", func(done Done) {
+				It("Processes jobs that are already on the queue when it starts", func() {
 					addJobs([]*Job{
 						&Job{ID: "1", Attempt: 9},
 						&Job{ID: "2", Attempt: 9},
@@ -545,11 +573,9 @@ var _ = Describe("Consumer", func() {
 					Eventually(failed).Should(Receive(ConsistOf([]string{
 						"three",
 					})))
-
-					close(done)
 				})
 
-				It("Processes jobs that are added to the queue after it starts", func(done Done) {
+				It("Processes jobs that are added to the queue after it starts", func() {
 					start(handler)
 
 					addJobs([]*Job{
@@ -567,11 +593,9 @@ var _ = Describe("Consumer", func() {
 					Eventually(failed).Should(Receive(ConsistOf([]string{
 						"6",
 					})))
-
-					close(done)
 				})
 
-				It("Continues processing jobs when there are more than it can handle in a single poll", func(done Done) {
+				It("Continues processing jobs when there are more than it can handle in a single poll", func() {
 					start(handler)
 
 					addJobs([]*Job{
@@ -607,9 +631,7 @@ var _ = Describe("Consumer", func() {
 						"nine",
 						"12",
 					})))
-
-					close(done)
-				}, 5.0)
+				})
 			})
 		})
 
@@ -640,27 +662,26 @@ var _ = Describe("Consumer", func() {
 				cancel()
 			})
 
-			It("Periodically updates the heartbeat", func(done Done) {
+			It("Periodically updates the heartbeat", func() {
 				var previouslySeenAt float64
-				lastSeenAt := make(chan float64)
-				ticker := time.NewTicker(50 * time.Millisecond)
-				go func() {
-					for _ = range ticker.C {
-						score, err := client.ZScore(consumer.queue.consumersSet, consumer.inflightSet).Result()
-						Expect(err).NotTo(HaveOccurred())
-						lastSeenAt <- score
+
+				lastSeenAt, stopPolling := poller(100*time.Millisecond, func() []interface{} {
+					score, err := client.ZScore(consumer.queue.consumersSet, consumer.inflightSet).Result()
+					Expect(err).NotTo(HaveOccurred())
+
+					return []interface{}{
+						score,
 					}
-				}()
+				})
 
 				for i := 0; i < 2; i++ {
-					Eventually(lastSeenAt).Should(Receive(BeNumerically(">", previouslySeenAt)))
-					previouslySeenAt = <-lastSeenAt
+					Eventually(lastSeenAt).Should(Receive(ConsistOf(BeNumerically(">", previouslySeenAt))))
+					previouslySeenAt = (<-lastSeenAt)[0].(float64)
 				}
 
 				// Clean up
-				ticker.Stop()
-				close(done)
-			}, 5.0)
+				close(stopPolling)
+			})
 		})
 
 		Describe("runScheduler", func() {
@@ -709,16 +730,18 @@ var _ = Describe("Consumer", func() {
 					}
 				})
 
-				It("Enqueues them", func(done Done) {
-					jobIDs := make(chan []string)
-					ticker := time.NewTicker(100 * time.Millisecond)
-					go func() {
-						for _ = range ticker.C {
-							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-							Expect(err).NotTo(HaveOccurred())
-							jobIDs <- activeJobs
+				It("Enqueues them", func() {
+					jobIDs, stopPolling := poller(100*time.Millisecond, func() []interface{} {
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
+
+						results := make([]interface{}, len(activeJobs))
+						for idx, job := range activeJobs {
+							results[idx] = job
 						}
-					}()
+
+						return results
+					})
 
 					// Test that we get only the initial jobs that are schedulable.
 					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
@@ -735,9 +758,8 @@ var _ = Describe("Consumer", func() {
 					})))
 
 					// Clean up
-					ticker.Stop()
-					close(done)
-				}, 5.0)
+					close(stopPolling)
+				})
 			})
 		})
 
@@ -807,16 +829,18 @@ var _ = Describe("Consumer", func() {
 					}
 				})
 
-				It("Enqueues them", func(done Done) {
-					jobIDs := make(chan []string)
-					ticker := time.NewTicker(100 * time.Millisecond)
-					go func() {
-						for _ = range ticker.C {
-							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-							Expect(err).NotTo(HaveOccurred())
-							jobIDs <- activeJobs
+				It("Enqueues them", func() {
+					jobIDs, stopPolling := poller(100*time.Millisecond, func() []interface{} {
+						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
+
+						results := make([]interface{}, len(activeJobs))
+						for idx, job := range activeJobs {
+							results[idx] = job
 						}
-					}()
+
+						return results
+					})
 
 					// Test that we get only the initial jobs that are schedulable.
 					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
@@ -834,9 +858,8 @@ var _ = Describe("Consumer", func() {
 					})))
 
 					// Clean up
-					ticker.Stop()
-					close(done)
-				}, 5.0)
+					close(stopPolling)
+				})
 			})
 		})
 	})

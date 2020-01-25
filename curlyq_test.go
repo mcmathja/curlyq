@@ -2,6 +2,7 @@ package curlyq
 
 import (
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -9,5 +10,6 @@ import (
 
 func TestCurlyq(t *testing.T) {
 	RegisterFailHandler(Fail)
+	SetDefaultEventuallyTimeout(5 * time.Second)
 	RunSpecs(t, "curlyq")
 }
