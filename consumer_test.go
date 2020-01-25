@@ -525,11 +525,6 @@ var _ = Describe("Consumer", func() {
 				AfterEach(func() {
 					failedTicker.Stop()
 					retriedTicker.Stop()
-
-					close(successful)
-					close(completed)
-					close(retried)
-					close(failed)
 				})
 
 				It("Processes jobs that are already on the queue when it starts", func(done Done) {
