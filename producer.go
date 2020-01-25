@@ -2,7 +2,6 @@ package curlyq
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -27,8 +26,21 @@ type ProducerOpts struct {
 	// Client is a custom go-redis instance used to communicate with Redis.
 	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
+	// Log provides a concrete implementation of the Logger interface.
+	// If not provided, it will default to using the stdlib's log package.
+	Logger Logger
 	// Queue specifies the name of the queue that this producer will push to.
 	Queue string
+}
+
+func (o *ProducerOpts) withDefaults() *ProducerOpts {
+	opts := *o
+
+	if opts.Logger == nil {
+		opts.Logger = &DefaultLogger{}
+	}
+
+	return &opts
 }
 
 // NewProducer instantiates a new Producer.
@@ -62,7 +74,7 @@ func NewProducer(opts *ProducerOpts) *Producer {
 	scheduleJobScript := loadLua("/lua/schedule_job.lua")
 
 	return &Producer{
-		opts: opts,
+		opts: opts.withDefaults(),
 
 		// Computed properties
 		client: client,
@@ -145,7 +157,7 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 		return "", err
 	}
 
-	log.Printf("Enqueued job: %s", job.ID)
+	p.opts.Logger.Info("Enqueued job", "job_id", job.ID)
 	return job.ID, nil
 }
 
@@ -175,6 +187,6 @@ func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (stri
 		return "", err
 	}
 
-	log.Printf("Scheduled job: %s at %s", job.ID, at.Format(time.RFC1123Z))
+	p.opts.Logger.Info("Scheduled job", "job_id", job.ID, "scheduled_at", at.Format(time.RFC1123Z))
 	return job.ID, nil
 }

@@ -55,6 +55,10 @@ var _ = Describe("Producer", func() {
 				Expect(producer.pushJobScript).NotTo(BeNil())
 				Expect(producer.scheduleJobScript).NotTo(BeNil())
 			})
+
+			It("Applies the correct default options", func() {
+				Expect(producer.opts.Logger).To(Equal(&DefaultLogger{}))
+			})
 		})
 
 		Context("When an Address is provided", func() {

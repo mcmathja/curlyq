@@ -3,7 +3,6 @@ package curlyq
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -46,6 +45,9 @@ type ConsumerOpts struct {
 	// Client is a custom go-redis instance used to communicate with Redis.
 	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
+	// Log provides a concrete implementation of the Logger interface.
+	// If not provided, it will default to using the stdlib's log package.
+	Logger Logger
 	// Queue specifies the name of the queue that this consumer will consume from.
 	Queue string
 
@@ -94,6 +96,10 @@ type ConsumerOpts struct {
 // withDefaults returns a new ConsumerOpts with default values applied.
 func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 	opts := *o
+
+	if opts.Logger == nil {
+		opts.Logger = &DefaultLogger{}
+	}
 
 	if opts.HeartbeatInterval <= 0 {
 		opts.HeartbeatInterval = 1 * time.Minute
@@ -246,7 +252,6 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) error {
 		}
 	}
 
-	log.Println("Consumer shut down successfully.")
 	return nil
 }
 
@@ -285,7 +290,7 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 // The second handles polling Redis for new jobs and putting them into the queue.
 func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	defer c.processes.Done()
-	log.Println("Starting executors.")
+	c.opts.Logger.Debug("Executors: starting process")
 
 	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
 	executors := make(chan struct{}, c.opts.ExecutorsConcurrency)
@@ -295,6 +300,7 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	defer func() {
 		// Stop polling for jobs.
 		ticker.Stop()
+		c.opts.Logger.Debug("Executors: process shut down")
 
 		// Drain the queue of any buffered jobs that we haven't started work on.
 		close(queue)
@@ -355,12 +361,12 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 		count := cap(queue) - len(queue)
 
 		if count > 0 {
-			log.Println("Polling for jobs...")
+			c.opts.Logger.Debug("Executors: polling for new jobs...")
 			jobs, err := c.getJobs(ctx, count)
 			if err != nil {
-				log.Println("Error retrieving jobs: ", err)
+				c.opts.Logger.Error("Executors: error retrieving jobs", "error", err)
 			} else {
-				log.Println("Finished polling. Retrieved", len(jobs), "job(s).")
+				c.opts.Logger.Debug("Executors: successfully polled", "job_count", len(jobs))
 				for _, job := range jobs {
 					queue <- job
 				}
@@ -368,7 +374,7 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 				hasMoreWork = len(jobs) == count
 			}
 		} else {
-			log.Println("Waiting while buffer is full...")
+			c.opts.Logger.Debug("Executors: waiting while buffer is full...")
 		}
 
 		select {
@@ -392,21 +398,22 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 // runHeartbeat starts a processing loop that periodically
 // registers this consumer's presence to other consumers.
 func (c *Consumer) runHeartbeat(ctx context.Context) {
+	c.opts.Logger.Debug("Heartbeat: process starting")
 	defer c.processes.Done()
 
 	ticker := time.NewTicker(c.opts.HeartbeatInterval)
 	defer func() {
 		ticker.Stop()
-		log.Println("Heartbeat process shut down.")
+		c.opts.Logger.Debug("Heartbeat: process shut down")
 	}()
 
 	for {
-		log.Println("Updating heartbeat...")
+		c.opts.Logger.Debug("Heartbeat: updating consumer...")
 		err := c.registerConsumer(ctx)
 		if err != nil {
-			log.Println("Failed to update heartbeat:", err)
+			c.opts.Logger.Error("Heartbeat: failed to update", "error", err)
 		} else {
-			log.Println("Heartbeat updated successfully.")
+			c.opts.Logger.Debug("Heartbeat: update successful")
 		}
 
 		select {
@@ -421,23 +428,24 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 // runScheduler starts a processing loop that handles
 // moving scheduled jobs to the active queue.
 func (c *Consumer) runScheduler(ctx context.Context) {
+	c.opts.Logger.Debug("Scheduler: starting process")
 	defer c.processes.Done()
 
 	ticker := time.NewTicker(c.opts.SchedulerPollInterval)
 	defer func() {
 		ticker.Stop()
-		log.Println("Scheduler process shut down.")
+		c.opts.Logger.Debug("Scheduler: process shut down")
 	}()
 
 	for {
-		log.Println("Scheduling jobs...")
+		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
 
 		hasMoreWork := false
 		count, err := c.enqueueScheduledJobs(ctx)
 		if err != nil {
-			log.Println("Scheduler failed to run:", err)
+			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 		} else {
-			log.Println("Scheduler completed successfully. Scheduled", count, "job(s).")
+			c.opts.Logger.Debug("Scheduler: jobs enqueued sucessfully", "job_count", count)
 			hasMoreWork = uint(count) == c.opts.SchedulerMaxJobs
 		}
 
@@ -462,23 +470,24 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 // runCustodian starts a processing loop that handles
 // cleaning up orphaned jobs from dead consumers.
 func (c *Consumer) runCustodian(ctx context.Context) {
+	c.opts.Logger.Debug("Custodian: starting process")
 	defer c.processes.Done()
 
 	ticker := time.NewTicker(c.opts.CustodianPollInterval)
 	defer func() {
 		ticker.Stop()
-		log.Println("Custodian process shut down.")
+		c.opts.Logger.Debug("Custodian: process shut down")
 	}()
 
 	for {
-		log.Println("Cleaning up orphaned jobs...")
+		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
 
 		hasMoreWork := false
 		count, err := c.reenqueueOrphanedJobs(ctx)
 		if err != nil {
-			log.Println("Custodian failed to run:", err)
+			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
 		} else {
-			log.Println("Custodian completed successfully. Cleaned up", count, "job(s).")
+			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
 			hasMoreWork = uint(count) == c.opts.CustodianMaxJobs
 		}
 

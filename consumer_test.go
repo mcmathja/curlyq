@@ -72,6 +72,7 @@ var _ = Describe("Consumer", func() {
 			})
 
 			It("Applies the correct default options", func() {
+				Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
 				Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
 				Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
 				Expect(consumer.opts.CustodianMaxJobs).To(Equal(uint(50)))
