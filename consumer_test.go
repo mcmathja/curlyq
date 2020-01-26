@@ -13,6 +13,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
 )
 
 var _ = Describe("Consumer", func() {
@@ -264,6 +265,31 @@ var _ = Describe("Consumer", func() {
 					stopJob <- struct{}{}
 				})
 			})
+
+			Context("When an abort is signaled", func() {
+				It("Returns an error", func() {
+					startJob := make(chan struct{})
+					processErrors := make(chan error)
+					ctx := context.Background()
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								processErrors <- fmt.Errorf("%v", r)
+							}
+						}()
+
+						processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							return nil
+						})
+					}()
+
+					<-startJob
+					err := fmt.Errorf("Abort!")
+					consumer.abort(err)
+					Eventually(processErrors).Should(Receive(MatchError(err)))
+				})
+			})
 		})
 
 		Describe("Consume", func() {
@@ -315,6 +341,30 @@ var _ = Describe("Consumer", func() {
 					syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 					Eventually(processErrors).Should(Receive(HaveOccurred()))
 					stopJob <- struct{}{}
+				})
+			})
+
+			Context("When an abort is signaled", func() {
+				It("Returns an error", func() {
+					startJob := make(chan struct{})
+					processErrors := make(chan error)
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								processErrors <- fmt.Errorf("%v", r)
+							}
+						}()
+
+						processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							return nil
+						})
+					}()
+
+					<-startJob
+					err := fmt.Errorf("Abort!")
+					consumer.abort(err)
+					Eventually(processErrors).Should(Receive(MatchError(err)))
 				})
 			})
 		})
@@ -631,6 +681,122 @@ var _ = Describe("Consumer", func() {
 						"nine",
 						"12",
 					})))
+				})
+			})
+
+			Describe("Critical failures", func() {
+				var job *Job
+				var opErrors chan error
+
+				BeforeEach(func() {
+					consumer = NewConsumer(&ConsumerOpts{
+						Client:               client,
+						Queue:                queue,
+						ExecutorsMaxAttempts: 5,
+					})
+
+					opErrors = make(chan error)
+					go func() {
+						err := <-consumer.errors
+						opErrors <- err
+					}()
+				})
+
+				Context("When a retry fails", func() {
+					BeforeEach(func() {
+						job = &Job{ID: "job-1"}
+						addJobs([]*Job{job})
+					})
+
+					It("Signals an abort", func() {
+						startJob := make(chan struct{})
+						start(func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							server.Close()
+							return fmt.Errorf("Try me again!")
+						})
+
+						<-startJob
+						Eventually(opErrors).Should(Receive(And(
+							BeAssignableToTypeOf(ErrFailedToRetryJob{}),
+							MatchAllFields(Fields{
+								"Job": Equal(Job{
+									ID:      job.ID,
+									Attempt: job.Attempt + 1,
+									Data:    job.Data,
+								}),
+								"Err": HaveOccurred(),
+							}),
+						)))
+					})
+				})
+
+				Context("When a kill fails", func() {
+					var job *Job
+
+					BeforeEach(func() {
+						job = &Job{
+							ID:      "job-1",
+							Attempt: 5,
+						}
+						addJobs([]*Job{job})
+					})
+
+					It("Signals an abort", func() {
+						startJob := make(chan struct{})
+						start(func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							server.Close()
+							return fmt.Errorf("I'll never run!")
+						})
+
+						<-startJob
+						Eventually(opErrors).Should(Receive(And(
+							BeAssignableToTypeOf(ErrFailedToKillJob{}),
+							MatchAllFields(Fields{
+								"Job": Equal(Job{
+									ID:      job.ID,
+									Attempt: job.Attempt + 1,
+									Data:    job.Data,
+								}),
+								"Err": HaveOccurred(),
+							}),
+						)))
+					})
+				})
+
+				Context("When an ack fails", func() {
+					var job *Job
+
+					BeforeEach(func() {
+						job = &Job{
+							ID:      "job-1",
+							Attempt: 5,
+						}
+						addJobs([]*Job{job})
+					})
+
+					It("Signals an abort", func() {
+						startJob := make(chan struct{})
+						start(func(ctx context.Context, job Job) error {
+							startJob <- struct{}{}
+							server.Close()
+							return nil
+						})
+
+						<-startJob
+						Eventually(opErrors).Should(Receive(And(
+							BeAssignableToTypeOf(ErrFailedToAckJob{}),
+							MatchAllFields(Fields{
+								"Job": Equal(Job{
+									ID:      job.ID,
+									Attempt: job.Attempt,
+									Data:    job.Data,
+								}),
+								"Err": HaveOccurred(),
+							}),
+						)))
+					})
 				})
 			})
 		})

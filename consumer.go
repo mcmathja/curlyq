@@ -25,6 +25,7 @@ type Consumer struct {
 	queue       *queue
 	inflightSet string
 	processes   sync.WaitGroup
+	errors      chan error
 
 	// Scripts
 	ackJobScript                *redis.Script
@@ -174,6 +175,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		Name: opts.Queue,
 	})
 	inflightSet := fmt.Sprintf("%s:%s", queue.inflightJobsPrefix, id)
+	errors := make(chan error)
 
 	// Embed Lua scripts
 	prepScripts()
@@ -193,6 +195,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		client:      client,
 		queue:       queue,
 		inflightSet: inflightSet,
+		errors:      errors,
 
 		ackJobScript:                ackJobScript,
 		enqueueScheduledJobsScript:  enqueueScheduledJobsScript,
@@ -214,10 +217,12 @@ type HandlerFunc func(context.Context, Job) error
 // ConsumeCtx starts the consumer with a user-supplied context.
 // The Consumer runs indefinitely until the provided context is canceled.
 // An error is returned if the Consumer cannot shut down gracefully.
-func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) error {
+func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err error) {
+	ctx, cancel := context.WithCancel(ctx)
+
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
-	err := c.registerConsumer(ctx)
+	err = c.registerConsumer(ctx)
 	if err != nil {
 		return err
 	}
@@ -230,7 +235,11 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) error {
 	go c.runExecutors(ctx, handler)
 
 	// Block until the provided context is done.
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err = <-c.errors:
+		cancel()
+	}
 
 	// Wait for the child processes to finish.
 	done := make(chan struct{})
@@ -252,7 +261,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) error {
 		}
 	}
 
-	return nil
+	return err
 }
 
 // Consumer starts the consumer with a default context.
@@ -266,20 +275,24 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 		}
 	}
 
-	// Start the consumer with a cancellable context.
+	// Start the consumer with a cancelable context.
 	ctx, cancel := context.WithCancel(context.Background())
 	errChan := make(chan error)
 	go func() {
 		errChan <- c.ConsumeCtx(ctx, handler)
 	}()
 
-	// Wait until we receive a signal and then cancel the context.
+	// Wait until we receive a signal or an error.
 	termChan := make(chan os.Signal)
 	signal.Notify(termChan, signals...)
-	<-termChan
-	cancel()
+	select {
+	case err := <-errChan:
+		return err
+	case <-termChan:
+		cancel()
+	}
 
-	// Return the result of the Execute call.
+	// Capture any errors that occur during shutdown.
 	return <-errChan
 }
 
@@ -341,12 +354,30 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 					err := c.executeJob(ctx, job, handler)
 					if err != nil {
 						if job.Attempt < c.opts.ExecutorsMaxAttempts {
-							c.retryJob(ctx, job)
+							_, err := c.retryJob(ctx, job)
+							if err != nil {
+								c.abort(ErrFailedToRetryJob{
+									Job: *job,
+									Err: err,
+								})
+							}
 						} else {
-							c.killJob(ctx, job)
+							_, err := c.killJob(ctx, job)
+							if err != nil {
+								c.abort(ErrFailedToKillJob{
+									Job: *job,
+									Err: err,
+								})
+							}
 						}
 					} else {
-						c.ackJob(ctx, job)
+						_, err := c.ackJob(ctx, job)
+						if err != nil {
+							c.abort(ErrFailedToAckJob{
+								Job: *job,
+								Err: err,
+							})
+						}
 					}
 					<-executors
 				}()
@@ -709,4 +740,11 @@ func (c *Consumer) executeJob(ctx context.Context, job *Job, handler HandlerFunc
 	}()
 
 	return handler(ctx, *job)
+}
+
+func (c *Consumer) abort(err error) {
+	select {
+	case c.errors <- err:
+	default:
+	}
 }
