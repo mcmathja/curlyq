@@ -306,8 +306,13 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	c.opts.Logger.Debug("Executors: starting process")
 
 	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
-	executors := make(chan struct{}, c.opts.ExecutorsConcurrency)
 	queue := make(chan *Job, c.opts.ExecutorsBufferSize)
+
+	// Set up a token bucket to limit concurrent active executors.
+	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
+	for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
+		tokens <- struct{}{}
+	}
 
 	// Clean up
 	defer func() {
@@ -327,25 +332,25 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 
 		// Wait for existing executors to finish running jobs.
 		for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
-			executors <- struct{}{}
+			<-tokens
 		}
-		close(executors)
+		close(tokens)
 
 		c.opts.Logger.Debug("Executors: process shut down")
 	}()
 
 	// Execution loop
 	go func() {
-		defer func() {
-			// We've broken out of the loop.
-			<-executors
-		}()
-
 		for {
-			executors <- struct{}{}
+			token, open := <-tokens
+			if !open {
+				return
+			}
+
 			select {
 			case job, open := <-queue:
 				if !open {
+					tokens <- token
 					return
 				}
 
@@ -379,9 +384,10 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 							})
 						}
 					}
-					<-executors
+					tokens <- token
 				}()
 			case <-ctx.Done():
+				tokens <- token
 				return
 			}
 		}
