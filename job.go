@@ -5,6 +5,7 @@ import (
 	"github.com/vmihailenco/msgpack"
 )
 
+// A Job provides a wrapper for your job data.
 type Job struct {
 	ID      string
 	Data    []byte

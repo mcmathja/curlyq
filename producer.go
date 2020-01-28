@@ -7,7 +7,7 @@ import (
 	"github.com/go-redis/redis"
 )
 
-// Producers provide logic for pushing jobs onto a queue.
+// A Producer pushes jobs onto a queue.
 type Producer struct {
 	opts *ProducerOpts
 
@@ -26,7 +26,7 @@ type ProducerOpts struct {
 	// Client is a custom go-redis instance used to communicate with Redis.
 	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
-	// Log provides a concrete implementation of the Logger interface.
+	// Logger provides a concrete implementation of the Logger interface.
 	// If not provided, it will default to using the stdlib's log package.
 	Logger Logger
 	// Queue specifies the name of the queue that this producer will push to.

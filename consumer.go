@@ -15,7 +15,7 @@ import (
 	"github.com/gofrs/uuid"
 )
 
-// Consumers execute jobs and manage the state of the queue.
+// A Consumer executes jobs and manages the state of the queue.
 type Consumer struct {
 	opts *ConsumerOpts
 
@@ -46,7 +46,7 @@ type ConsumerOpts struct {
 	// Client is a custom go-redis instance used to communicate with Redis.
 	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
-	// Log provides a concrete implementation of the Logger interface.
+	// Logger provides a concrete implementation of the Logger interface.
 	// If not provided, it will default to using the stdlib's log package.
 	Logger Logger
 	// Queue specifies the name of the queue that this consumer will consume from.
@@ -219,6 +219,7 @@ type HandlerFunc func(context.Context, Job) error
 // An error is returned if the Consumer cannot shut down gracefully.
 func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
@@ -264,7 +265,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	return err
 }
 
-// Consumer starts the consumer with a default context.
+// Consume starts the consumer with a default context.
 // The Consumer runs until the process receives one of the specified signals.
 // An error is returned if the Consumer cannot shut down gracefully.
 func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
@@ -277,6 +278,8 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 
 	// Start the consumer with a cancelable context.
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	errChan := make(chan error)
 	go func() {
 		errChan <- c.ConsumeCtx(ctx, handler)
@@ -483,7 +486,7 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 		if err != nil {
 			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 		} else {
-			c.opts.Logger.Debug("Scheduler: jobs enqueued sucessfully", "job_count", count)
+			c.opts.Logger.Debug("Scheduler: jobs enqueued successfully", "job_count", count)
 			hasMoreWork = uint(count) == c.opts.SchedulerMaxJobs
 		}
 
