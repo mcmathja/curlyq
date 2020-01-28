@@ -8,7 +8,7 @@ package:
 	pkger
 
 format:
-	go fmt
+	gofmt -l -w -s .
 
 tidy:
 	go mod tidy
