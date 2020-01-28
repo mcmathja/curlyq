@@ -56,7 +56,7 @@ A Job wraps your data. In most cases, that's all you'll ever need to know about 
 
 ```go
 job := &cq.Job{
-	Data: []byte("Some data.")
+	Data: []byte("Some data."),
 }
 ```
 
@@ -79,14 +79,14 @@ You can also provide an existing [go-redis](https://github.com/go-redis/redis) i
 import "github.com/go-redis/redis/v7"
 
 client := redis.NewClient(&redis.Client{
-  Password: "p@55vvoRd",
-  DB: 3,
-  MaxRetries: 2,
+	Password: "p@55vvoRd",
+	DB: 3,
+	MaxRetries: 2,
 })
 
 producer := cq.NewProducer(&cq.ProducerOpts{
 	Client: client,
-	Queue: "queue_name"
+	Queue: "queue_name",
 })
 ```
 
@@ -134,8 +134,8 @@ consumer.Consume(func(ctx context.Context, job cq.Job) error {
 })
 ```
 
-If the handler function returns nil, the job is considered to have been processed successfully and is removed from the queue. If the handler returns an error or panics, the job is considered to have failed and will be retried or killed based on how many times it has been attempted.
+If the provided handler function returns `nil`, the job is considered to have been processed successfully and is removed from the queue. If the handler returns an error or panics, the job is considered to have failed and will be retried or killed based on how many times it has been attempted.
 
-Consume will continue to process jobs until your application receives an interrupt signal or the consumer encounters a fatal error. Fatal errors only occur when the consumer is unable to communicate with Redis for an essential operation, such as updating the status of a job in flight.
+`Consume` will continue to process jobs until your application receives an interrupt signal or the consumer encounters a fatal error. Fatal errors only occur when the consumer is unable to communicate with Redis for an essential operation, such as updating the status of a job in flight.
 
 See the documentation for [ConsumerOpts](https://godoc.org/github.com/mcmathja/curlyq#ConsumerOpts) for more details about available configuration options.
