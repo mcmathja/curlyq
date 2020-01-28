@@ -1410,8 +1410,8 @@ var _ = Describe("Consumer", func() {
 
 			Context("When this consumer owns the jobs", func() {
 				BeforeEach(func() {
-					for _, job_id := range jobIDs {
-						err := client.SAdd(consumer.inflightSet, job_id).Err()
+					for _, jobID := range jobIDs {
+						err := client.SAdd(consumer.inflightSet, jobID).Err()
 						Expect(err).NotTo(HaveOccurred())
 					}
 				})
@@ -1432,9 +1432,9 @@ var _ = Describe("Consumer", func() {
 
 			Context("When this consumer does not own some of the jobs", func() {
 				BeforeEach(func() {
-					for idx, job_id := range jobIDs {
+					for idx, jobID := range jobIDs {
 						if idx < 2 {
-							err := client.SAdd(consumer.inflightSet, job_id).Err()
+							err := client.SAdd(consumer.inflightSet, jobID).Err()
 							Expect(err).NotTo(HaveOccurred())
 						}
 					}
