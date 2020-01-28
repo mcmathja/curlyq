@@ -181,6 +181,7 @@ var _ = Describe("Producer", func() {
 
 				It("Generates one", func() {
 					id, err := producer.PerformAfter(duration, job)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(job.ID).To(Equal(""))
 
 					_, err = uuid.FromString(id)
@@ -249,6 +250,7 @@ var _ = Describe("Producer", func() {
 
 				It("Generates one", func() {
 					id, err := producer.PerformAt(moment, job)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(job.ID).To(Equal(""))
 
 					_, err = uuid.FromString(id)
@@ -309,6 +311,7 @@ var _ = Describe("Producer", func() {
 
 				It("Generates one", func() {
 					id, err := producer.Perform(job)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(job.ID).To(Equal(""))
 
 					_, err = uuid.FromString(id)
@@ -388,6 +391,7 @@ var _ = Describe("Producer", func() {
 
 				It("Generates one", func() {
 					id, err := producer.pushJob(ctx, job)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(job.ID).To(Equal(""))
 
 					_, err = uuid.FromString(id)
@@ -467,6 +471,7 @@ var _ = Describe("Producer", func() {
 
 				It("Generates one", func() {
 					id, err := producer.scheduleJob(ctx, at, job)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(job.ID).To(Equal(""))
 
 					_, err = uuid.FromString(id)

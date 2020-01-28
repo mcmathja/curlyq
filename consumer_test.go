@@ -472,16 +472,16 @@ var _ = Describe("Consumer", func() {
 					stopJob := make(chan struct{})
 
 					addJobs([]*Job{
-						&Job{ID: "job-1"},
-						&Job{ID: "job-2"},
-						&Job{ID: "job-3"},
-						&Job{ID: "job-4"},
-						&Job{ID: "job-5"},
-						&Job{ID: "job-6"},
-						&Job{ID: "job-7"},
-						&Job{ID: "job-8"},
-						&Job{ID: "job-9"},
-						&Job{ID: "job-10"},
+						{ID: "job-1"},
+						{ID: "job-2"},
+						{ID: "job-3"},
+						{ID: "job-4"},
+						{ID: "job-5"},
+						{ID: "job-6"},
+						{ID: "job-7"},
+						{ID: "job-8"},
+						{ID: "job-9"},
+						{ID: "job-10"},
 					})
 
 					active, stopPolling := poller(100*time.Millisecond, func() []interface{} {
@@ -607,9 +607,9 @@ var _ = Describe("Consumer", func() {
 
 				It("Processes jobs that are already on the queue when it starts", func() {
 					addJobs([]*Job{
-						&Job{ID: "1", Attempt: 9},
-						&Job{ID: "2", Attempt: 9},
-						&Job{ID: "three", Attempt: 10},
+						{ID: "1", Attempt: 9},
+						{ID: "2", Attempt: 9},
+						{ID: "three", Attempt: 10},
 					})
 
 					start(handler)
@@ -629,9 +629,9 @@ var _ = Describe("Consumer", func() {
 					start(handler)
 
 					addJobs([]*Job{
-						&Job{ID: "four", Attempt: 9},
-						&Job{ID: "5", Attempt: 10},
-						&Job{ID: "6", Attempt: 10},
+						{ID: "four", Attempt: 9},
+						{ID: "5", Attempt: 10},
+						{ID: "6", Attempt: 10},
 					})
 
 					Eventually(completed).Should(Receive(ConsistOf([]string{
@@ -649,18 +649,18 @@ var _ = Describe("Consumer", func() {
 					start(handler)
 
 					addJobs([]*Job{
-						&Job{ID: "7", Attempt: 9},
-						&Job{ID: "8", Attempt: 9},
-						&Job{ID: "nine", Attempt: 10},
-						&Job{ID: "ten", Attempt: 9},
-						&Job{ID: "11", Attempt: 10},
-						&Job{ID: "12", Attempt: 10},
-						&Job{ID: "13", Attempt: 9},
-						&Job{ID: "14", Attempt: 9},
-						&Job{ID: "15", Attempt: 9},
-						&Job{ID: "17", Attempt: 0},
-						&Job{ID: "19", Attempt: 0},
-						&Job{ID: "21", Attempt: 0},
+						{ID: "7", Attempt: 9},
+						{ID: "8", Attempt: 9},
+						{ID: "nine", Attempt: 10},
+						{ID: "ten", Attempt: 9},
+						{ID: "11", Attempt: 10},
+						{ID: "12", Attempt: 10},
+						{ID: "13", Attempt: 9},
+						{ID: "14", Attempt: 9},
+						{ID: "15", Attempt: 9},
+						{ID: "17", Attempt: 0},
+						{ID: "19", Attempt: 0},
+						{ID: "21", Attempt: 0},
 					})
 
 					Eventually(completed).Should(Receive(ConsistOf([]string{
@@ -1063,7 +1063,7 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("Acknolwedges the job, removing it from Redis", func() {
+				It("Acknowledges the job, removing it from Redis", func() {
 					acked, err := consumer.ackJob(ctx, job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(acked).To(Equal(true))
@@ -1385,7 +1385,7 @@ var _ = Describe("Consumer", func() {
 
 		Describe("reenqueueActiveJobs", func() {
 			var jobs []*Job
-			var job_ids []string
+			var jobIDs []string
 
 			BeforeEach(func() {
 				for i := 0; i < 4; i++ {
@@ -1398,7 +1398,7 @@ var _ = Describe("Consumer", func() {
 					}
 
 					jobs = append(jobs, job)
-					job_ids = append(job_ids, id)
+					jobIDs = append(jobIDs, id)
 
 					msg, err := job.message()
 					Expect(err).NotTo(HaveOccurred())
@@ -1410,7 +1410,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When this consumer owns the jobs", func() {
 				BeforeEach(func() {
-					for _, job_id := range job_ids {
+					for _, job_id := range jobIDs {
 						err := client.SAdd(consumer.inflightSet, job_id).Err()
 						Expect(err).NotTo(HaveOccurred())
 					}
@@ -1422,7 +1422,7 @@ var _ = Describe("Consumer", func() {
 
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(activeJobs).To(ConsistOf(job_ids))
+					Expect(activeJobs).To(ConsistOf(jobIDs))
 
 					inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -1432,7 +1432,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When this consumer does not own some of the jobs", func() {
 				BeforeEach(func() {
-					for idx, job_id := range job_ids {
+					for idx, job_id := range jobIDs {
 						if idx < 2 {
 							err := client.SAdd(consumer.inflightSet, job_id).Err()
 							Expect(err).NotTo(HaveOccurred())
@@ -1446,7 +1446,7 @@ var _ = Describe("Consumer", func() {
 
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(activeJobs).To(ConsistOf([]string{job_ids[0], job_ids[1]}))
+					Expect(activeJobs).To(ConsistOf([]string{jobIDs[0], jobIDs[1]}))
 
 					inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -1459,6 +1459,7 @@ var _ = Describe("Consumer", func() {
 			Context("When there are no registered consumers", func() {
 				It("Doesn't do anything", func() {
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
 					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1497,6 +1498,7 @@ var _ = Describe("Consumer", func() {
 
 				It("Doesn't do anything", func() {
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
 					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1554,6 +1556,7 @@ var _ = Describe("Consumer", func() {
 					removedInflightSets := inflightSets[2:]
 
 					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(2))
 
 					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1603,6 +1606,7 @@ var _ = Describe("Consumer", func() {
 						modifiedInflightSet := inflightSets[2]
 
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(3))
 
 						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1659,6 +1663,7 @@ var _ = Describe("Consumer", func() {
 						removedInflightSets := inflightSets[3:]
 
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(1))
 
 						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1696,6 +1701,7 @@ var _ = Describe("Consumer", func() {
 						removedInflightSets := inflightSets[2:]
 
 						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(1))
 
 						consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
