@@ -1,8 +1,10 @@
 # CurlyQ
 
-[![Build Status](https://api.travis-ci.org/mcmathja/curlyq.svg?branch=master)](https://travis-ci.org/mcmathja/curlyq)
 [![GoDoc](https://godoc.org/github.com/mcmathja/curlyq?status.svg)](https://godoc.org/github.com/mcmathja/curlyq)
+[![Build Status](https://api.travis-ci.org/mcmathja/curlyq.svg?branch=master)](https://travis-ci.org/mcmathja/curlyq)
 [![GoCover](https://gocover.io/_badge/github.com/mcmathja/curlyq)](https://gocover.io/github.com/mcmathja/curlyq)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mcmathja/curlyq)](https://goreportcard.com/report/github.com/mcmathja/curlyq)
+[![License](https://img.shields.io/github/license/mcmathja/curlyq.svg)](https://github.com/mcmathja/curlyq/blob/master/LICENSE)
 
 CurlyQ provides a simple, easy-to-use interface for performing background processing in Go. It supports scheduled jobs, job deduplication, and configurable concurrent execution out of the box.
 
