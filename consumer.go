@@ -62,7 +62,7 @@ type ConsumerOpts struct {
 	CustodianPollInterval time.Duration
 	// Max number of jobs to clean up during a single check.
 	// Default: 50
-	CustodianMaxJobs uint
+	CustodianMaxJobs int
 	// How long to wait after a missed heartbeat before a consumer is considered dead.
 	// Default: 1 minute
 	// Minimum: 5 seconds
@@ -70,16 +70,16 @@ type ConsumerOpts struct {
 
 	// How many job executors to run simultaneously.
 	// Default: 10
-	ExecutorsConcurrency uint
+	ExecutorsConcurrency int
 	// How frequently we should poll for jobs.
 	// Default: 3 seconds
 	ExecutorsPollInterval time.Duration
 	// How many jobs to buffer locally.
 	// Default: Same as ExecutorsConcurrency
-	ExecutorsBufferSize uint
+	ExecutorsBufferSize int
 	// The number of times to attempt a job before killing it.
 	// Default: 5
-	ExecutorsMaxAttempts uint
+	ExecutorsMaxAttempts int
 
 	// How frequently we should heartbeat.
 	// Default: 1 minute
@@ -91,7 +91,7 @@ type ConsumerOpts struct {
 	SchedulerPollInterval time.Duration
 	// Max number of jobs to schedule during each check.
 	// Default: 50
-	SchedulerMaxJobs uint
+	SchedulerMaxJobs int
 }
 
 // withDefaults returns a new ConsumerOpts with default values applied.
@@ -315,12 +315,12 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 
 	// A token bucket to limit concurrent active executors.
 	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
-	for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
+	for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
 		tokens <- struct{}{}
 	}
 
 	defer func() {
-		for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
+		for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
 			<-tokens
 		}
 		close(tokens)
@@ -484,7 +484,7 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 		} else {
 			c.opts.Logger.Debug("Scheduler: jobs enqueued successfully", "job_count", count)
-			hasMoreWork = uint(count) == c.opts.SchedulerMaxJobs
+			hasMoreWork = count == c.opts.SchedulerMaxJobs
 		}
 
 		select {
@@ -525,7 +525,7 @@ func (c *Consumer) runCustodian(ctx context.Context) {
 			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
 		} else {
 			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
-			hasMoreWork = uint(count) == c.opts.CustodianMaxJobs
+			hasMoreWork = count == c.opts.CustodianMaxJobs
 		}
 
 		select {

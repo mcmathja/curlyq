@@ -9,7 +9,7 @@ import (
 type Job struct {
 	ID      string
 	Data    []byte
-	Attempt uint
+	Attempt int
 }
 
 func (j *Job) message() ([]byte, error) {

@@ -22,7 +22,7 @@ var _ = Describe("Job", func() {
 		It("Encodes the job data correctly", func() {
 			msg, err := job.message()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(msg).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 207, 0, 0, 0, 0, 0, 0, 0, 1}))
+			Expect(msg).To(Equal([]byte{131, 162, 73, 68, 166, 84, 101, 115, 116, 73, 68, 164, 68, 97, 116, 97, 196, 8, 84, 101, 115, 116, 68, 97, 116, 97, 167, 65, 116, 116, 101, 109, 112, 116, 211, 0, 0, 0, 0, 0, 0, 0, 1}))
 		})
 
 		Context("When an ID is not provided", func() {
@@ -61,7 +61,7 @@ var _ = Describe("Job", func() {
 			job = &Job{}
 			Expect(job.ID).To(Equal(""))
 			Expect(job.Data).To(BeNil())
-			Expect(job.Attempt).To(Equal(uint(0)))
+			Expect(job.Attempt).To(Equal(0))
 		})
 
 		It("Decodes the job data correctly", func() {
@@ -69,7 +69,7 @@ var _ = Describe("Job", func() {
 			err := job.fromMessage(bytes)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(job.ID).To(Equal("TestID"))
-			Expect(job.Attempt).To(Equal(uint(1)))
+			Expect(job.Attempt).To(Equal(1))
 			Expect(string(job.Data)).To(Equal("TestData"))
 		})
 	})

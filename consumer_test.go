@@ -76,16 +76,16 @@ var _ = Describe("Consumer", func() {
 				Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
 				Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
 				Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
-				Expect(consumer.opts.CustodianMaxJobs).To(Equal(uint(50)))
+				Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
 				Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
-				Expect(consumer.opts.ExecutorsConcurrency).To(Equal(uint(10)))
+				Expect(consumer.opts.ExecutorsConcurrency).To(Equal(10))
 				Expect(consumer.opts.ExecutorsPollInterval).To(Equal(3 * time.Second))
-				Expect(consumer.opts.ExecutorsBufferSize).To(Equal(uint(10)))
-				Expect(consumer.opts.ExecutorsMaxAttempts).To(Equal(uint(5)))
+				Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
+				Expect(consumer.opts.ExecutorsMaxAttempts).To(Equal(5))
 				Expect(consumer.opts.HeartbeatInterval).To(Equal(1 * time.Minute))
 				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
 				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
-				Expect(consumer.opts.SchedulerMaxJobs).To(Equal(uint(50)))
+				Expect(consumer.opts.SchedulerMaxJobs).To(Equal(50))
 			})
 		})
 
@@ -146,7 +146,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Applies the correct values to the other options", func() {
-					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(uint(25)))
+					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(25))
 				})
 			})
 
@@ -161,8 +161,8 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Retains the values of the other options", func() {
-					Expect(consumer.opts.ExecutorsConcurrency).To(Equal(uint(25)))
-					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(uint(10)))
+					Expect(consumer.opts.ExecutorsConcurrency).To(Equal(25))
+					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
 				})
 			})
 		})
@@ -1215,7 +1215,7 @@ var _ = Describe("Consumer", func() {
 
 						job := &Job{
 							ID:      id,
-							Attempt: uint(i),
+							Attempt: i,
 							Data:    data,
 						}
 
@@ -1256,7 +1256,7 @@ var _ = Describe("Consumer", func() {
 
 						for idx, job := range jobs {
 							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(job.Attempt).To(Equal(uint(idx)))
+							Expect(job.Attempt).To(Equal(idx))
 							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 						}
 					})
@@ -1289,7 +1289,7 @@ var _ = Describe("Consumer", func() {
 
 						for idx, job := range jobs {
 							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(job.Attempt).To(Equal(uint(idx)))
+							Expect(job.Attempt).To(Equal(idx))
 							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 						}
 					})
@@ -1339,7 +1339,7 @@ var _ = Describe("Consumer", func() {
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
-					Expect(job.Attempt).To(Equal(uint(1)))
+					Expect(job.Attempt).To(Equal(1))
 
 					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -1374,7 +1374,7 @@ var _ = Describe("Consumer", func() {
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
-					Expect(job.Attempt).To(Equal(uint(0)))
+					Expect(job.Attempt).To(Equal(0))
 
 					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -1393,7 +1393,7 @@ var _ = Describe("Consumer", func() {
 					data := []byte(fmt.Sprintf("job_data-%d", i))
 					job := &Job{
 						ID:      id,
-						Attempt: uint(i),
+						Attempt: i,
 						Data:    data,
 					}
 
@@ -1801,7 +1801,7 @@ var _ = Describe("Consumer", func() {
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
-					Expect(job.Attempt).To(Equal(uint(7)))
+					Expect(job.Attempt).To(Equal(7))
 
 					scheduledJobs, err := client.ZRangeWithScores(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -1837,7 +1837,7 @@ var _ = Describe("Consumer", func() {
 
 					err = job.fromMessage([]byte(jobData))
 					Expect(err).NotTo(HaveOccurred())
-					Expect(job.Attempt).To(Equal(uint(6)))
+					Expect(job.Attempt).To(Equal(6))
 
 					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
