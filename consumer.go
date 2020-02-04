@@ -306,40 +306,39 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 // The second handles polling Redis for new jobs and putting them into the queue.
 func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	defer c.processes.Done()
-	c.opts.Logger.Debug("Executors: starting process")
+
+	c.opts.Logger.Debug("Executors: process started")
+	defer c.opts.Logger.Debug("Executors: process finished")
 
 	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
-	queue := make(chan *Job, c.opts.ExecutorsBufferSize)
+	defer ticker.Stop()
 
-	// Set up a token bucket to limit concurrent active executors.
+	// A token bucket to limit concurrent active executors.
 	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
 	for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
 		tokens <- struct{}{}
 	}
 
-	// Clean up
 	defer func() {
-		// Stop polling for jobs.
-		ticker.Stop()
+		for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
+			<-tokens
+		}
+		close(tokens)
+	}()
 
-		// Drain the queue of any buffered jobs that we haven't started work on.
-		close(queue)
+	// A buffer to store locally queued jobs.
+	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
+
+	defer func() {
+		close(buffer)
 		jobs := []*Job{}
-		for job := range queue {
+		for job := range buffer {
 			jobs = append(jobs, job)
 		}
 
 		if len(jobs) > 0 {
 			c.reenqueueActiveJobs(ctx, jobs)
 		}
-
-		// Wait for existing executors to finish running jobs.
-		for i := uint(0); i < c.opts.ExecutorsConcurrency; i++ {
-			<-tokens
-		}
-		close(tokens)
-
-		c.opts.Logger.Debug("Executors: process shut down")
 	}()
 
 	// Execution loop
@@ -351,7 +350,7 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 			}
 
 			select {
-			case job, open := <-queue:
+			case job, open := <-buffer:
 				if !open {
 					tokens <- token
 					return
@@ -399,7 +398,7 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 	// Polling loop
 	for {
 		hasMoreWork := false
-		count := cap(queue) - len(queue)
+		count := cap(buffer) - len(buffer)
 
 		if count > 0 {
 			c.opts.Logger.Debug("Executors: polling for new jobs...")
@@ -409,7 +408,7 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 			} else {
 				c.opts.Logger.Debug("Executors: successfully polled", "job_count", len(jobs))
 				for _, job := range jobs {
-					queue <- job
+					buffer <- job
 				}
 
 				hasMoreWork = len(jobs) == count
@@ -439,14 +438,13 @@ func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
 // runHeartbeat starts a processing loop that periodically
 // registers this consumer's presence to other consumers.
 func (c *Consumer) runHeartbeat(ctx context.Context) {
-	c.opts.Logger.Debug("Heartbeat: process starting")
 	defer c.processes.Done()
 
+	c.opts.Logger.Debug("Heartbeat: process starting")
+	defer c.opts.Logger.Debug("Heartbeat: process finished")
+
 	ticker := time.NewTicker(c.opts.HeartbeatInterval)
-	defer func() {
-		ticker.Stop()
-		c.opts.Logger.Debug("Heartbeat: process shut down")
-	}()
+	defer ticker.Stop()
 
 	for {
 		c.opts.Logger.Debug("Heartbeat: updating consumer...")
@@ -469,14 +467,13 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 // runScheduler starts a processing loop that handles
 // moving scheduled jobs to the active queue.
 func (c *Consumer) runScheduler(ctx context.Context) {
-	c.opts.Logger.Debug("Scheduler: starting process")
 	defer c.processes.Done()
 
+	c.opts.Logger.Debug("Scheduler: process starting")
+	defer c.opts.Logger.Debug("Scheduler: starting finished")
+
 	ticker := time.NewTicker(c.opts.SchedulerPollInterval)
-	defer func() {
-		ticker.Stop()
-		c.opts.Logger.Debug("Scheduler: process shut down")
-	}()
+	defer ticker.Stop()
 
 	for {
 		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
@@ -511,14 +508,13 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 // runCustodian starts a processing loop that handles
 // cleaning up orphaned jobs from dead consumers.
 func (c *Consumer) runCustodian(ctx context.Context) {
-	c.opts.Logger.Debug("Custodian: starting process")
 	defer c.processes.Done()
 
+	c.opts.Logger.Debug("Custodian: process starting")
+	defer c.opts.Logger.Debug("Custodian: process finished")
+
 	ticker := time.NewTicker(c.opts.CustodianPollInterval)
-	defer func() {
-		ticker.Stop()
-		c.opts.Logger.Debug("Custodian: process shut down")
-	}()
+	defer ticker.Stop()
 
 	for {
 		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
