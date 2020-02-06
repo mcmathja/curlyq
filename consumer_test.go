@@ -3,7 +3,6 @@ package curlyq
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -411,12 +410,13 @@ var _ = Describe("Consumer", func() {
 			Eventually(processErrors).Should(Receive(BeNil()))
 		})
 
-		Describe("runExecutors", func() {
-			var start func(HandlerFunc)
+		Describe("runPoller", func() {
+			var start func()
 			var addJobs func(jobs []*Job)
+			var buffer chan *Job
 
 			BeforeEach(func() {
-				start = func(handler HandlerFunc) {
+				start = func() {
 					consumer.processes.Add(1)
 					go func() {
 						defer func() {
@@ -425,7 +425,7 @@ var _ = Describe("Consumer", func() {
 							}
 						}()
 
-						consumer.runExecutors(ctx, handler)
+						consumer.runPoller(ctx, buffer)
 						processErrors <- nil
 					}()
 				}
@@ -453,24 +453,19 @@ var _ = Describe("Consumer", func() {
 			Context("When the context is canceled", func() {
 				BeforeEach(func() {
 					consumer = NewConsumer(&ConsumerOpts{
-						Client:               client,
-						Queue:                queue,
-						ExecutorsConcurrency: 1,
-						ExecutorsBufferSize:  5,
+						Client:              client,
+						Queue:               queue,
+						ExecutorsBufferSize: 5,
 					})
+					buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
 				})
 
 				It("Shuts down cleanly", func() {
-					start(func(ctx context.Context, job Job) error {
-						return nil
-					})
-
+					start()
 					cancel()
 				})
 
 				It("Reenqueues jobs on the queue", func() {
-					stopJob := make(chan struct{})
-
 					addJobs([]*Job{
 						{ID: "job-1"},
 						{ID: "job-2"},
@@ -496,14 +491,10 @@ var _ = Describe("Consumer", func() {
 						return results
 					})
 
-					start(func(ctx context.Context, job Job) error {
-						<-stopJob
-						return nil
-					})
+					start()
 
-					// We can buffer five elements in addition to one being processed.
-					// So only four elements should remain in the active list.
 					Eventually(active).Should(Receive(ConsistOf([]string{
+						"job-6",
 						"job-7",
 						"job-8",
 						"job-9",
@@ -513,291 +504,405 @@ var _ = Describe("Consumer", func() {
 					// Cancel the process and wait until the queue is drained.
 					cancel()
 					Eventually(active).Should(Receive(ConsistOf([]string{
+						"job-6",
 						"job-7",
 						"job-8",
 						"job-9",
 						"job-10",
+						"job-1",
 						"job-2",
 						"job-3",
 						"job-4",
 						"job-5",
-						"job-6",
 					})))
 
 					// Allow the in-process job to proceed.
-					close(stopJob)
 					close(stopPolling)
 				})
 			})
 
 			Context("When jobs are on the queue", func() {
-				var successful chan string
-
-				var completed chan []string
-				var retried chan []interface{}
-				var failed chan []interface{}
-
-				var stopPollingRetried chan struct{}
-				var stopPollingFailed chan struct{}
-
-				handler := func(ctx context.Context, job Job) error {
-					id, err := strconv.Atoi(job.ID)
-					if err != nil {
-						return err
-					}
-
-					if id%2 == 0 {
-						panic("No even numbers!")
-					}
-
-					successful <- job.ID
-					return nil
-				}
-
 				BeforeEach(func() {
 					consumer = NewConsumer(&ConsumerOpts{
-						Client:                client,
-						Queue:                 queue,
-						ExecutorsPollInterval: 100 * time.Millisecond,
-						ExecutorsMaxAttempts:  10,
-						ExecutorsConcurrency:  3,
-						ExecutorsBufferSize:   3,
+						Client:              client,
+						Queue:               queue,
+						ExecutorsBufferSize: 5,
+					})
+					buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
+				})
+
+				It("Buffers jobs that are already on the queue when it starts", func() {
+					jobs := []*Job{
+						{ID: "1"},
+						{ID: "2"},
+						{ID: "3"},
+					}
+
+					addJobs(jobs)
+
+					start()
+					Eventually(buffer).Should(Receive(Equal(jobs[0])))
+					Eventually(buffer).Should(Receive(Equal(jobs[1])))
+					Eventually(buffer).Should(Receive(Equal(jobs[2])))
+				})
+
+				It("Buffers jobs that are added after it starts", func() {
+					start()
+
+					jobs := []*Job{
+						{ID: "1"},
+						{ID: "2"},
+						{ID: "3"},
+					}
+
+					addJobs(jobs)
+
+					Eventually(buffer).Should(Receive(Equal(jobs[0])))
+					Eventually(buffer).Should(Receive(Equal(jobs[1])))
+					Eventually(buffer).Should(Receive(Equal(jobs[2])))
+				})
+
+				Context("When there are more jobs on the queue than we can buffer in one go", func() {
+					BeforeEach(func() {
+						consumer = NewConsumer(&ConsumerOpts{
+							Client:                client,
+							Queue:                 queue,
+							ExecutorsBufferSize:   2,
+							ExecutorsPollInterval: 100 * time.Millisecond,
+						})
+						buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
 					})
 
-					successful = make(chan string)
+					It("Continues polling until it buffers all of them", func() {
+						start()
 
-					completed = make(chan []string)
+						jobs := []*Job{
+							{ID: "1"},
+							{ID: "2"},
+							{ID: "3"},
+						}
+
+						addJobs(jobs)
+
+						Eventually(buffer).Should(Receive(Equal(jobs[0])))
+						Eventually(buffer).Should(Receive(Equal(jobs[1])))
+						Eventually(buffer).Should(Receive(Equal(jobs[2])))
+					})
+				})
+			})
+		})
+
+		Describe("runProcessor", func() {
+			var start func(handler HandlerFunc)
+			var addJobs func(jobs []*Job)
+			var buffer chan *Job
+
+			BeforeEach(func() {
+				consumer = NewConsumer(&ConsumerOpts{
+					Client:               client,
+					Queue:                queue,
+					ExecutorsBufferSize:  3,
+					ExecutorsMaxAttempts: 5,
+				})
+				buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
+
+				start = func(handler HandlerFunc) {
+					consumer.processes.Add(1)
 					go func() {
-						jobIDs := []string{}
-						for id := range successful {
-							jobIDs = append(jobIDs, id)
-							completed <- jobIDs
+						defer func() {
+							if r := recover(); r != nil {
+								processErrors <- fmt.Errorf("%v", r)
+							}
+						}()
+
+						consumer.runProcessor(ctx, buffer, handler)
+						processErrors <- nil
+					}()
+				}
+
+				addJobs = func(jobs []*Job) {
+					var err error
+
+					hashData := map[string]interface{}{}
+					jobIDs := make([]interface{}, len(jobs))
+					for idx, job := range jobs {
+						msg, err := job.message()
+						Expect(err).NotTo(HaveOccurred())
+
+						jobIDs[idx] = job.ID
+						hashData[job.ID] = msg
+					}
+
+					err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					err = client.SAdd(consumer.inflightSet, jobIDs...).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					go func() {
+						for _, job := range jobs {
+							buffer <- job
 						}
 					}()
+				}
+			})
 
-					retried, stopPollingRetried = poller(100*time.Millisecond, func() []interface{} {
-						scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-
-						results := make([]interface{}, len(scheduledJobs))
-						for idx, job := range scheduledJobs {
-							results[idx] = job
-						}
-
-						return results
+			Context("When the context is canceled", func() {
+				It("Shuts down cleanly", func() {
+					start(func(ctx context.Context, job Job) error {
+						return nil
 					})
-
-					failed, stopPollingFailed = poller(100*time.Millisecond, func() []interface{} {
-						deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-
-						results := make([]interface{}, len(deadJobs))
-						for idx, job := range deadJobs {
-							results[idx] = job
-						}
-
-						return results
-					})
-				})
-
-				AfterEach(func() {
-					close(stopPollingFailed)
-					close(stopPollingRetried)
-				})
-
-				It("Processes jobs that are already on the queue when it starts", func() {
-					addJobs([]*Job{
-						{ID: "1", Attempt: 9},
-						{ID: "2", Attempt: 9},
-						{ID: "three", Attempt: 10},
-					})
-
-					start(handler)
-
-					Eventually(completed).Should(Receive(ConsistOf([]string{
-						"1",
-					})))
-					Eventually(retried).Should(Receive(ConsistOf([]string{
-						"2",
-					})))
-					Eventually(failed).Should(Receive(ConsistOf([]string{
-						"three",
-					})))
-				})
-
-				It("Processes jobs that are added to the queue after it starts", func() {
-					start(handler)
-
-					addJobs([]*Job{
-						{ID: "four", Attempt: 9},
-						{ID: "5", Attempt: 10},
-						{ID: "6", Attempt: 10},
-					})
-
-					Eventually(completed).Should(Receive(ConsistOf([]string{
-						"5",
-					})))
-					Eventually(retried).Should(Receive(ConsistOf([]string{
-						"four",
-					})))
-					Eventually(failed).Should(Receive(ConsistOf([]string{
-						"6",
-					})))
-				})
-
-				It("Continues processing jobs when there are more than it can handle in a single poll", func() {
-					start(handler)
-
-					addJobs([]*Job{
-						{ID: "7", Attempt: 9},
-						{ID: "8", Attempt: 9},
-						{ID: "nine", Attempt: 10},
-						{ID: "ten", Attempt: 9},
-						{ID: "11", Attempt: 10},
-						{ID: "12", Attempt: 10},
-						{ID: "13", Attempt: 9},
-						{ID: "14", Attempt: 9},
-						{ID: "15", Attempt: 9},
-						{ID: "17", Attempt: 0},
-						{ID: "19", Attempt: 0},
-						{ID: "21", Attempt: 0},
-					})
-
-					Eventually(completed).Should(Receive(ConsistOf([]string{
-						"7",
-						"11",
-						"13",
-						"15",
-						"17",
-						"19",
-						"21",
-					})))
-					Eventually(retried).Should(Receive(ConsistOf([]string{
-						"8",
-						"ten",
-						"14",
-					})))
-					Eventually(failed).Should(Receive(ConsistOf([]string{
-						"nine",
-						"12",
-					})))
+					cancel()
+					consumer.processes.Wait()
 				})
 			})
 
-			Describe("Critical failures", func() {
-				var job *Job
-				var opErrors chan error
-
-				BeforeEach(func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Client:               client,
-						Queue:                queue,
-						ExecutorsMaxAttempts: 5,
+			Context("When the buffer is closed", func() {
+				It("Shuts down cleanly", func() {
+					start(func(ctx context.Context, job Job) error {
+						return nil
 					})
-
-					opErrors = make(chan error)
-					go func() {
-						err := <-consumer.errors
-						opErrors <- err
-					}()
+					close(buffer)
+					consumer.processes.Wait()
 				})
+			})
 
-				Context("When a retry fails", func() {
-					BeforeEach(func() {
-						job = &Job{ID: "job-1"}
-						addJobs([]*Job{job})
-					})
+			It("Processes jobs", func() {
+				processed := make(chan string)
+				defer close(processed)
 
-					It("Signals an abort", func() {
-						startJob := make(chan struct{})
-						start(func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							server.Close()
-							return fmt.Errorf("Try me again!")
-						})
+				results := make(chan []string)
+				defer close(results)
 
-						<-startJob
-						Eventually(opErrors).Should(Receive(And(
-							BeAssignableToTypeOf(ErrFailedToRetryJob{}),
-							MatchAllFields(Fields{
-								"Job": Equal(Job{
-									ID:      job.ID,
-									Attempt: job.Attempt + 1,
-									Data:    job.Data,
-								}),
-								"Err": HaveOccurred(),
-							}),
-						)))
-					})
-				})
+				jobs := []*Job{
+					{ID: "0"},
+					{ID: "1"},
+					{ID: "2"},
+					{ID: "3"},
+					{ID: "4"},
+					{ID: "5"},
+					{ID: "6"},
+					{ID: "7"},
+					{ID: "8"},
+					{ID: "9"},
+				}
 
-				Context("When a kill fails", func() {
-					var job *Job
+				go func() {
+					processedJobs := []string{}
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case jobID, ok := <-processed:
+							if !ok {
+								return
+							}
 
-					BeforeEach(func() {
-						job = &Job{
-							ID:      "job-1",
-							Attempt: 5,
+							processedJobs = append(processedJobs, jobID)
+							results <- processedJobs
 						}
-						addJobs([]*Job{job})
-					})
+					}
+				}()
 
-					It("Signals an abort", func() {
-						startJob := make(chan struct{})
-						start(func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							server.Close()
-							return fmt.Errorf("I'll never run!")
-						})
+				addJobs(jobs[:5])
 
-						<-startJob
-						Eventually(opErrors).Should(Receive(And(
-							BeAssignableToTypeOf(ErrFailedToKillJob{}),
-							MatchAllFields(Fields{
-								"Job": Equal(Job{
-									ID:      job.ID,
-									Attempt: job.Attempt + 1,
-									Data:    job.Data,
-								}),
-								"Err": HaveOccurred(),
-							}),
-						)))
-					})
+				start(func(ctx context.Context, job Job) error {
+					processed <- job.ID
+					return nil
 				})
 
-				Context("When an ack fails", func() {
-					var job *Job
+				Eventually(results).Should(Receive(ConsistOf([]string{
+					jobs[0].ID,
+					jobs[1].ID,
+					jobs[2].ID,
+					jobs[3].ID,
+					jobs[4].ID,
+				})))
 
-					BeforeEach(func() {
-						job = &Job{
-							ID:      "job-1",
-							Attempt: 5,
-						}
-						addJobs([]*Job{job})
-					})
+				addJobs(jobs[5:])
 
-					It("Signals an abort", func() {
-						startJob := make(chan struct{})
-						start(func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							server.Close()
-							return nil
-						})
+				Eventually(results).Should(Receive(ConsistOf([]string{
+					jobs[0].ID,
+					jobs[1].ID,
+					jobs[2].ID,
+					jobs[3].ID,
+					jobs[4].ID,
+					jobs[5].ID,
+					jobs[6].ID,
+					jobs[7].ID,
+					jobs[8].ID,
+					jobs[9].ID,
+				})))
+			})
 
-						<-startJob
-						Eventually(opErrors).Should(Receive(And(
-							BeAssignableToTypeOf(ErrFailedToAckJob{}),
-							MatchAllFields(Fields{
-								"Job": Equal(Job{
-									ID:      job.ID,
-									Attempt: job.Attempt,
-									Data:    job.Data,
-								}),
-								"Err": HaveOccurred(),
-							}),
-						)))
-					})
+			It("Retries jobs that return an error or panic", func() {
+				retried, stopPollingRetried := poller(100*time.Millisecond, func() []interface{} {
+					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
+
+					results := make([]interface{}, len(scheduledJobs))
+					for idx, job := range scheduledJobs {
+						results[idx] = job
+					}
+
+					return results
 				})
+				defer close(stopPollingRetried)
+
+				start(func(ctx context.Context, job Job) error {
+					if job.ID == "retried" {
+						return fmt.Errorf("Retried")
+					}
+
+					if job.ID == "failed" {
+						panic("Failed")
+					}
+
+					return nil
+				})
+
+				jobs := []*Job{
+					{ID: "retried"},
+					{ID: "failed"},
+				}
+
+				addJobs(jobs)
+
+				Eventually(retried).Should(Receive(ConsistOf([]string{
+					jobs[0].ID,
+					jobs[1].ID,
+				})))
+			})
+
+			It("Kills jobs that return an error or panic after ExecutorsMaxAttempts attempts", func() {
+				killed, stopPollingKilled := poller(100*time.Millisecond, func() []interface{} {
+					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
+
+					results := make([]interface{}, len(deadJobs))
+					for idx, job := range deadJobs {
+						results[idx] = job
+					}
+
+					return results
+				})
+				defer close(stopPollingKilled)
+
+				start(func(ctx context.Context, job Job) error {
+					if job.ID == "retried" {
+						return fmt.Errorf("Retried")
+					}
+
+					if job.ID == "failed" {
+						panic("Failed")
+					}
+
+					return nil
+				})
+
+				jobs := []*Job{
+					{ID: "retried", Attempt: consumer.opts.ExecutorsMaxAttempts},
+					{ID: "failed", Attempt: consumer.opts.ExecutorsMaxAttempts},
+				}
+
+				addJobs(jobs)
+
+				Eventually(killed).Should(Receive(ConsistOf([]string{
+					jobs[0].ID,
+					jobs[1].ID,
+				})))
+			})
+
+			It("Aborts when a retry fails", func() {
+				addJobs([]*Job{{
+					ID:      "test",
+					Attempt: 2,
+					Data:    []byte("test"),
+				}})
+
+				err := fmt.Errorf("Failed")
+				startJob := make(chan struct{})
+				defer close(startJob)
+
+				start(func(ctx context.Context, job Job) error {
+					startJob <- struct{}{}
+					server.Close()
+					return err
+				})
+
+				<-startJob
+				Eventually(consumer.errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrFailedToRetryJob{}),
+					MatchAllFields(Fields{
+						"Job": Equal(Job{
+							ID:      "test",
+							Attempt: 3,
+							Data:    []byte("test"),
+						}),
+						"Err": HaveOccurred(),
+					}),
+				)))
+			})
+
+			It("Aborts when a kill fails", func() {
+				addJobs([]*Job{{
+					ID:      "test",
+					Attempt: consumer.opts.ExecutorsMaxAttempts,
+					Data:    []byte("test"),
+				}})
+
+				err := fmt.Errorf("Failed")
+				startJob := make(chan struct{})
+				defer close(startJob)
+
+				start(func(ctx context.Context, job Job) error {
+					startJob <- struct{}{}
+					server.Close()
+					return err
+				})
+
+				<-startJob
+				Eventually(consumer.errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrFailedToKillJob{}),
+					MatchAllFields(Fields{
+						"Job": Equal(Job{
+							ID:      "test",
+							Attempt: consumer.opts.ExecutorsMaxAttempts + 1,
+							Data:    []byte("test"),
+						}),
+						"Err": HaveOccurred(),
+					}),
+				)))
+			})
+
+			It("Aborts when an ack fails", func() {
+				addJobs([]*Job{{
+					ID:      "test",
+					Attempt: 1,
+					Data:    []byte("test"),
+				}})
+
+				startJob := make(chan struct{})
+				defer close(startJob)
+
+				start(func(ctx context.Context, job Job) error {
+					startJob <- struct{}{}
+					server.Close()
+					return nil
+				})
+
+				<-startJob
+				Eventually(consumer.errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrFailedToAckJob{}),
+					MatchAllFields(Fields{
+						"Job": Equal(Job{
+							ID:      "test",
+							Attempt: 1,
+							Data:    []byte("test"),
+						}),
+						"Err": HaveOccurred(),
+					}),
+				)))
 			})
 		})
 

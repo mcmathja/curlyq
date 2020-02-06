@@ -20,12 +20,13 @@ type Consumer struct {
 	opts *ConsumerOpts
 
 	// Computed properties
-	id          string
 	client      *redis.Client
-	queue       *queue
-	inflightSet string
-	processes   sync.WaitGroup
 	errors      chan error
+	id          string
+	inflightSet string
+	queue       *queue
+	onAbort     sync.Once
+	processes   sync.WaitGroup
 
 	// Scripts
 	ackJobScript                *redis.Script
@@ -176,6 +177,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 	})
 	inflightSet := fmt.Sprintf("%s:%s", queue.inflightJobsPrefix, id)
 	errors := make(chan error)
+	onAbort := sync.Once{}
 
 	// Embed Lua scripts
 	prepScripts()
@@ -195,6 +197,7 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		client:      client,
 		queue:       queue,
 		inflightSet: inflightSet,
+		onAbort:     onAbort,
 		errors:      errors,
 
 		ackJobScript:                ackJobScript,
@@ -221,6 +224,9 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// A buffer to store locally queued jobs.
+	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
+
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
 	err = c.registerConsumer(ctx)
@@ -229,11 +235,12 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	}
 
 	// Spin up the child processes.
-	c.processes.Add(4)
+	c.processes.Add(5)
 	go c.runHeartbeat(ctx)
 	go c.runScheduler(ctx)
 	go c.runCustodian(ctx)
-	go c.runExecutors(ctx, handler)
+	go c.runProcessor(ctx, buffer, handler)
+	go c.runPoller(ctx, buffer)
 
 	// Block until the provided context is done.
 	select {
@@ -301,120 +308,27 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 
 // Processing Loops
 
-// runExecutors starts two processing loops.
-// The first handles executing queued jobs with the user-supplied handler function.
-// The second handles polling Redis for new jobs and putting them into the queue.
-func (c *Consumer) runExecutors(ctx context.Context, handler HandlerFunc) {
+// runCustodian starts a processing loop that handles
+// cleaning up orphaned jobs from dead consumers.
+func (c *Consumer) runCustodian(ctx context.Context) {
 	defer c.processes.Done()
 
-	c.opts.Logger.Debug("Executors: process started")
-	defer c.opts.Logger.Debug("Executors: process finished")
+	c.opts.Logger.Debug("Custodian: process starting")
+	defer c.opts.Logger.Debug("Custodian: process finished")
 
-	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
+	ticker := time.NewTicker(c.opts.CustodianPollInterval)
 	defer ticker.Stop()
 
-	// A token bucket to limit concurrent active executors.
-	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
-	for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
-		tokens <- struct{}{}
-	}
-
-	defer func() {
-		for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
-			<-tokens
-		}
-		close(tokens)
-	}()
-
-	// A buffer to store locally queued jobs.
-	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
-
-	defer func() {
-		close(buffer)
-		jobs := []*Job{}
-		for job := range buffer {
-			jobs = append(jobs, job)
-		}
-
-		if len(jobs) > 0 {
-			c.reenqueueActiveJobs(ctx, jobs)
-		}
-	}()
-
-	// Execution loop
-	go func() {
-		for {
-			token, open := <-tokens
-			if !open {
-				return
-			}
-
-			select {
-			case job, open := <-buffer:
-				if !open {
-					tokens <- token
-					return
-				}
-
-				// Execute the job concurrently.
-				go func() {
-					err := c.executeJob(ctx, job, handler)
-					if err != nil {
-						if job.Attempt < c.opts.ExecutorsMaxAttempts {
-							_, err := c.retryJob(ctx, job)
-							if err != nil {
-								c.abort(ErrFailedToRetryJob{
-									Job: *job,
-									Err: err,
-								})
-							}
-						} else {
-							_, err := c.killJob(ctx, job)
-							if err != nil {
-								c.abort(ErrFailedToKillJob{
-									Job: *job,
-									Err: err,
-								})
-							}
-						}
-					} else {
-						_, err := c.ackJob(ctx, job)
-						if err != nil {
-							c.abort(ErrFailedToAckJob{
-								Job: *job,
-								Err: err,
-							})
-						}
-					}
-					tokens <- token
-				}()
-			case <-ctx.Done():
-				tokens <- token
-				return
-			}
-		}
-	}()
-
-	// Polling loop
 	for {
+		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
+
 		hasMoreWork := false
-		count := cap(buffer) - len(buffer)
-
-		if count > 0 {
-			c.opts.Logger.Debug("Executors: polling for new jobs...")
-			jobs, err := c.getJobs(ctx, count)
-			if err != nil {
-				c.opts.Logger.Error("Executors: error retrieving jobs", "error", err)
-			} else {
-				c.opts.Logger.Debug("Executors: successfully polled", "job_count", len(jobs))
-				for _, job := range jobs {
-					buffer <- job
-				}
-
-				hasMoreWork = len(jobs) == count
-			}
+		count, err := c.reenqueueOrphanedJobs(ctx)
+		if err != nil {
+			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
 		} else {
-			c.opts.Logger.Debug("Executors: waiting while buffer is full...")
+			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
+			hasMoreWork = count == c.opts.CustodianMaxJobs
 		}
 
 		select {
@@ -464,27 +378,48 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 	}
 }
 
-// runScheduler starts a processing loop that handles
-// moving scheduled jobs to the active queue.
-func (c *Consumer) runScheduler(ctx context.Context) {
+// runPoller starts a processing loop that handles
+// polling Redis for new jobs and buffering them locally.
+func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job) {
 	defer c.processes.Done()
 
-	c.opts.Logger.Debug("Scheduler: process starting")
-	defer c.opts.Logger.Debug("Scheduler: starting finished")
+	c.opts.Logger.Debug("Poller: process started")
+	defer c.opts.Logger.Debug("Poller: process finished")
 
-	ticker := time.NewTicker(c.opts.SchedulerPollInterval)
+	defer func() {
+		close(buffer)
+		jobs := []*Job{}
+		for job := range buffer {
+			jobs = append(jobs, job)
+		}
+
+		if len(jobs) > 0 {
+			c.reenqueueActiveJobs(ctx, jobs)
+		}
+	}()
+
+	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
 	defer ticker.Stop()
 
 	for {
-		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
-
 		hasMoreWork := false
-		count, err := c.enqueueScheduledJobs(ctx)
-		if err != nil {
-			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
+		count := cap(buffer) - len(buffer)
+
+		if count > 0 {
+			c.opts.Logger.Debug("Poller: polling for new jobs...")
+			jobs, err := c.getJobs(ctx, count)
+			if err != nil {
+				c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
+			} else {
+				c.opts.Logger.Debug("Poller: successfully polled", "job_count", len(jobs))
+				for _, job := range jobs {
+					buffer <- job
+				}
+
+				hasMoreWork = len(jobs) == count
+			}
 		} else {
-			c.opts.Logger.Debug("Scheduler: jobs enqueued successfully", "job_count", count)
-			hasMoreWork = count == c.opts.SchedulerMaxJobs
+			c.opts.Logger.Debug("Poller: waiting while buffer is full...")
 		}
 
 		select {
@@ -505,27 +440,101 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 	}
 }
 
-// runCustodian starts a processing loop that handles
-// cleaning up orphaned jobs from dead consumers.
-func (c *Consumer) runCustodian(ctx context.Context) {
+// runProcessor starts a processing loop that handles
+// processing buffered jobs with the user-supplied handler function.
+func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, handler HandlerFunc) {
 	defer c.processes.Done()
 
-	c.opts.Logger.Debug("Custodian: process starting")
-	defer c.opts.Logger.Debug("Custodian: process finished")
+	c.opts.Logger.Debug("Processor: process started")
+	defer c.opts.Logger.Debug("Processor: process finished")
 
-	ticker := time.NewTicker(c.opts.CustodianPollInterval)
+	// A token bucket to limit concurrent active executors.
+	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
+	for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
+		tokens <- struct{}{}
+	}
+
+	defer func() {
+		for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
+			<-tokens
+		}
+		close(tokens)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tokens:
+		}
+
+		select {
+		case <-ctx.Done():
+			tokens <- struct{}{}
+			return
+		case job, open := <-buffer:
+			if !open {
+				tokens <- struct{}{}
+				return
+			}
+
+			// Execute the job concurrently.
+			go func() {
+				err := c.executeJob(ctx, job, handler)
+				if err != nil {
+					if job.Attempt < c.opts.ExecutorsMaxAttempts {
+						_, err := c.retryJob(ctx, job)
+						if err != nil {
+							c.abort(ErrFailedToRetryJob{
+								Job: *job,
+								Err: err,
+							})
+						}
+					} else {
+						_, err := c.killJob(ctx, job)
+						if err != nil {
+							c.abort(ErrFailedToKillJob{
+								Job: *job,
+								Err: err,
+							})
+						}
+					}
+				} else {
+					_, err := c.ackJob(ctx, job)
+					if err != nil {
+						c.abort(ErrFailedToAckJob{
+							Job: *job,
+							Err: err,
+						})
+					}
+				}
+				tokens <- struct{}{}
+			}()
+		}
+	}
+}
+
+// runScheduler starts a processing loop that handles
+// moving scheduled jobs to the active queue.
+func (c *Consumer) runScheduler(ctx context.Context) {
+	defer c.processes.Done()
+
+	c.opts.Logger.Debug("Scheduler: process starting")
+	defer c.opts.Logger.Debug("Scheduler: process finished")
+
+	ticker := time.NewTicker(c.opts.SchedulerPollInterval)
 	defer ticker.Stop()
 
 	for {
-		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
+		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
 
 		hasMoreWork := false
-		count, err := c.reenqueueOrphanedJobs(ctx)
+		count, err := c.enqueueScheduledJobs(ctx)
 		if err != nil {
-			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
+			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 		} else {
-			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
-			hasMoreWork = count == c.opts.CustodianMaxJobs
+			c.opts.Logger.Debug("Scheduler: jobs enqueued successfully", "job_count", count)
+			hasMoreWork = count == c.opts.SchedulerMaxJobs
 		}
 
 		select {
@@ -747,9 +756,10 @@ func (c *Consumer) executeJob(ctx context.Context, job *Job, handler HandlerFunc
 	return handler(ctx, *job)
 }
 
+// abort notifies the consumer of a fatal error.
+// This starts the shut down process.
 func (c *Consumer) abort(err error) {
-	select {
-	case c.errors <- err:
-	default:
-	}
+	c.onAbort.Do(func() {
+		c.errors <- err
+	})
 }
