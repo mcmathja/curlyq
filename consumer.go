@@ -226,6 +226,11 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 
 	// A buffer to store locally queued jobs.
 	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
+	cond := sync.NewCond(&sync.Mutex{})
+	go func() {
+		<-ctx.Done()
+		cond.Broadcast()
+	}()
 
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
@@ -239,8 +244,8 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	go c.runHeartbeat(ctx)
 	go c.runScheduler(ctx)
 	go c.runCustodian(ctx)
-	go c.runProcessor(ctx, buffer, handler)
-	go c.runPoller(ctx, buffer)
+	go c.runProcessor(ctx, buffer, cond, handler)
+	go c.runPoller(ctx, buffer, cond)
 
 	// Block until the provided context is done.
 	select {
@@ -380,7 +385,7 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 
 // runPoller starts a processing loop that handles
 // polling Redis for new jobs and buffering them locally.
-func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job) {
+func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.Cond) {
 	defer c.processes.Done()
 
 	c.opts.Logger.Debug("Poller: process started")
@@ -398,51 +403,38 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job) {
 		}
 	}()
 
-	ticker := time.NewTicker(c.opts.ExecutorsPollInterval)
-	defer ticker.Stop()
-
 	for {
-		hasMoreWork := false
-		count := cap(buffer) - len(buffer)
+		cond.L.Lock()
+		for len(buffer) >= cap(buffer) && ctx.Err() == nil {
+			cond.Wait()
+		}
+		cond.L.Unlock()
 
-		if count > 0 {
-			c.opts.Logger.Debug("Poller: polling for new jobs...")
-			jobs, err := c.getJobs(ctx, count)
-			if err != nil {
-				c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
-			} else {
-				c.opts.Logger.Debug("Poller: successfully polled", "job_count", len(jobs))
-				for _, job := range jobs {
-					buffer <- job
-				}
-
-				hasMoreWork = len(jobs) == count
-			}
-		} else {
-			c.opts.Logger.Debug("Poller: waiting while buffer is full...")
+		if ctx.Err() != nil {
+			return
 		}
 
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if hasMoreWork {
-				continue
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		if c.pollActiveJobs(ctx) != nil {
 			continue
+		}
+
+		c.opts.Logger.Debug("Poller: polling for new jobs...")
+		count := cap(buffer) - len(buffer)
+		jobs, err := c.getJobs(ctx, count)
+		if err != nil {
+			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
+		} else {
+			c.opts.Logger.Debug("Poller: successfully polled", "job_count", len(jobs))
+			for _, job := range jobs {
+				buffer <- job
+			}
 		}
 	}
 }
 
 // runProcessor starts a processing loop that handles
 // processing buffered jobs with the user-supplied handler function.
-func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, handler HandlerFunc) {
+func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *sync.Cond, handler HandlerFunc) {
 	defer c.processes.Done()
 
 	c.opts.Logger.Debug("Processor: process started")
@@ -477,6 +469,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, handler H
 				tokens <- struct{}{}
 				return
 			}
+			cond.Broadcast()
 
 			// Execute the job concurrently.
 			go func() {
@@ -656,6 +649,18 @@ func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
 	}
 
 	return c.killJobScript.Run(client, keys, args...).Bool()
+}
+
+// pollActiveJobs blocks until jobs are in the queue in Redis.
+// It returns an error if it times out or the context is canceled.
+func (c *Consumer) pollActiveJobs(ctx context.Context) error {
+	client := c.client.WithContext(ctx)
+
+	return client.BRPopLPush(
+		c.queue.activeJobsList,
+		c.queue.activeJobsList,
+		c.opts.ExecutorsPollInterval,
+	).Err()
 }
 
 // reenqueueActiveJobs reschedules jobs that are still unstarted at shutdown.
