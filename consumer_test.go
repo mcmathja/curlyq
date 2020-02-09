@@ -797,10 +797,8 @@ var _ = Describe("Consumer", func() {
 
 	Describe("Redis operations", func() {
 		var consumer *Consumer
-		var ctx context.Context
 
 		BeforeEach(func() {
-			ctx = context.Background()
 			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
 				Queue:  queue,
@@ -830,7 +828,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Acknowledges the job, removing it from Redis", func() {
-					acked, err := consumer.ackJob(ctx, job)
+					acked, err := consumer.ackJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(acked).To(Equal(true))
 
@@ -848,7 +846,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Does not remove the job data", func() {
-					acked, err := consumer.ackJob(ctx, job)
+					acked, err := consumer.ackJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(acked).To(Equal(false))
 
@@ -879,7 +877,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Enqueues scheduled jobs that are ready to be run", func() {
-					count, err := consumer.enqueueScheduledJobs(ctx)
+					count, err := consumer.enqueueScheduledJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(2))
 
@@ -912,7 +910,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Does nothing", func() {
-					count, err := consumer.enqueueScheduledJobs(ctx)
+					count, err := consumer.enqueueScheduledJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
@@ -951,7 +949,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Enqueues only the maximum number allowed", func() {
-					count, err := consumer.enqueueScheduledJobs(ctx)
+					count, err := consumer.enqueueScheduledJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(3))
 
@@ -998,7 +996,7 @@ var _ = Describe("Consumer", func() {
 
 				Context("When count is larger than or equal to the number of jobs in the queue", func() {
 					It("Reserves all the jobs from the queue and returns them", func() {
-						jobs, err := consumer.getJobs(ctx, 10)
+						jobs, err := consumer.getJobs(10)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(len(jobs)).To(Equal(4))
 
@@ -1030,7 +1028,7 @@ var _ = Describe("Consumer", func() {
 
 				Context("When count is less than the number of jobs in the queue", func() {
 					It("Reserves up to count jobs from the queue and returns them", func() {
-						jobs, err := consumer.getJobs(ctx, 2)
+						jobs, err := consumer.getJobs(2)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(len(jobs)).To(Equal(2))
 
@@ -1064,7 +1062,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When there are no jobs in the queue", func() {
 				It("Does nothing", func() {
-					jobs, err := consumer.getJobs(ctx, 10)
+					jobs, err := consumer.getJobs(10)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(jobs)).To(Equal(0))
 				})
@@ -1096,7 +1094,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Moves the job to the dead set", func() {
-					killed, err := consumer.killJob(ctx, job)
+					killed, err := consumer.killJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(killed).To(Equal(true))
 
@@ -1131,7 +1129,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Does not alter the job data", func() {
-					killed, err := consumer.killJob(ctx, job)
+					killed, err := consumer.killJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(killed).To(Equal(false))
 
@@ -1183,7 +1181,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Moves the jobs back to the active list", func() {
-					err := consumer.reenqueueActiveJobs(ctx, jobs)
+					err := consumer.reenqueueActiveJobs(jobs)
 					Expect(err).NotTo(HaveOccurred())
 
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
@@ -1207,7 +1205,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Moves only the owned jobs back to the active list", func() {
-					err := consumer.reenqueueActiveJobs(ctx, jobs)
+					err := consumer.reenqueueActiveJobs(jobs)
 					Expect(err).NotTo(HaveOccurred())
 
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
@@ -1224,7 +1222,7 @@ var _ = Describe("Consumer", func() {
 		Describe("reenqueueOrphanedJobs", func() {
 			Context("When there are no registered consumers", func() {
 				It("Doesn't do anything", func() {
-					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					count, err := consumer.reenqueueOrphanedJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
@@ -1263,7 +1261,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Doesn't do anything", func() {
-					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					count, err := consumer.reenqueueOrphanedJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(0))
 
@@ -1321,7 +1319,7 @@ var _ = Describe("Consumer", func() {
 					retainedInflightSets := inflightSets[:2]
 					removedInflightSets := inflightSets[2:]
 
-					count, err := consumer.reenqueueOrphanedJobs(ctx)
+					count, err := consumer.reenqueueOrphanedJobs()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(count).To(Equal(2))
 
@@ -1371,7 +1369,7 @@ var _ = Describe("Consumer", func() {
 						removedInflightSets := inflightSets[3:]
 						modifiedInflightSet := inflightSets[2]
 
-						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						count, err := consumer.reenqueueOrphanedJobs()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(3))
 
@@ -1428,7 +1426,7 @@ var _ = Describe("Consumer", func() {
 						retainedInflightSets := inflightSets[:3]
 						removedInflightSets := inflightSets[3:]
 
-						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						count, err := consumer.reenqueueOrphanedJobs()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(1))
 
@@ -1466,7 +1464,7 @@ var _ = Describe("Consumer", func() {
 						retainedInflightSets := inflightSets[:2]
 						removedInflightSets := inflightSets[2:]
 
-						count, err := consumer.reenqueueOrphanedJobs(ctx)
+						count, err := consumer.reenqueueOrphanedJobs()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(count).To(Equal(1))
 
@@ -1499,7 +1497,7 @@ var _ = Describe("Consumer", func() {
 		Describe("registerConsumer", func() {
 			Context("When the consumer is not registered", func() {
 				It("Adds it to the consumers set", func() {
-					err := consumer.registerConsumer(ctx)
+					err := consumer.registerConsumer()
 					Expect(err).NotTo(HaveOccurred())
 
 					consumers, err := client.ZRange(consumer.queue.consumersSet, 0, -1).Result()
@@ -1518,7 +1516,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Updates it's last seen time", func() {
-					err := consumer.registerConsumer(ctx)
+					err := consumer.registerConsumer()
 					Expect(err).NotTo(HaveOccurred())
 
 					consumers, err := client.ZRangeWithScores(consumer.queue.consumersSet, 0, -1).Result()
@@ -1558,7 +1556,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Moves the job to the scheduled set at a time determined by the backoff routine", func() {
-					retried, err := consumer.retryJob(ctx, job)
+					retried, err := consumer.retryJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(retried).To(Equal(true))
 
@@ -1594,7 +1592,7 @@ var _ = Describe("Consumer", func() {
 				})
 
 				It("Does not alter the job data", func() {
-					retried, err := consumer.retryJob(ctx, job)
+					retried, err := consumer.retryJob(job)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(retried).To(Equal(false))
 

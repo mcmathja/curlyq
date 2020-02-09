@@ -224,6 +224,9 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Configure the Redis client with the provided context.
+	c.client = c.client.WithContext(ctx)
+
 	// A buffer to store locally queued jobs.
 	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
 	cond := sync.NewCond(&sync.Mutex{})
@@ -234,7 +237,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 
 	// Fire off a synchronous heartbeat before polling for any jobs.
 	// This ensures that cleanup works even if we fail during startup.
-	err = c.registerConsumer(ctx)
+	err = c.registerConsumer()
 	if err != nil {
 		return err
 	}
@@ -328,7 +331,7 @@ func (c *Consumer) runCustodian(ctx context.Context) {
 		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
 
 		hasMoreWork := false
-		count, err := c.reenqueueOrphanedJobs(ctx)
+		count, err := c.reenqueueOrphanedJobs()
 		if err != nil {
 			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
 		} else {
@@ -367,7 +370,7 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 
 	for {
 		c.opts.Logger.Debug("Heartbeat: updating consumer...")
-		err := c.registerConsumer(ctx)
+		err := c.registerConsumer()
 		if err != nil {
 			c.opts.Logger.Error("Heartbeat: failed to update", "error", err)
 		} else {
@@ -399,7 +402,7 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		}
 
 		if len(jobs) > 0 {
-			c.reenqueueActiveJobs(ctx, jobs)
+			c.reenqueueActiveJobs(jobs)
 		}
 	}()
 
@@ -414,13 +417,13 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 			return
 		}
 
-		if c.pollActiveJobs(ctx) != nil {
+		if c.pollActiveJobs() != nil {
 			continue
 		}
 
 		c.opts.Logger.Debug("Poller: polling for new jobs...")
 		count := cap(buffer) - len(buffer)
-		jobs, err := c.getJobs(ctx, count)
+		jobs, err := c.getJobs(count)
 		if err != nil {
 			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
 		} else {
@@ -476,7 +479,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 				err := c.executeJob(ctx, job, handler)
 				if err != nil {
 					if job.Attempt < c.opts.ExecutorsMaxAttempts {
-						_, err := c.retryJob(ctx, job)
+						_, err := c.retryJob(job)
 						if err != nil {
 							c.abort(ErrFailedToRetryJob{
 								Job: *job,
@@ -484,7 +487,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 							})
 						}
 					} else {
-						_, err := c.killJob(ctx, job)
+						_, err := c.killJob(job)
 						if err != nil {
 							c.abort(ErrFailedToKillJob{
 								Job: *job,
@@ -493,7 +496,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 						}
 					}
 				} else {
-					_, err := c.ackJob(ctx, job)
+					_, err := c.ackJob(job)
 					if err != nil {
 						c.abort(ErrFailedToAckJob{
 							Job: *job,
@@ -522,7 +525,7 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
 
 		hasMoreWork := false
-		count, err := c.enqueueScheduledJobs(ctx)
+		count, err := c.enqueueScheduledJobs()
 		if err != nil {
 			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 		} else {
@@ -553,9 +556,7 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 // ackJob acknowledges that a job has been successfully completed.
 // It returns a boolean indicating if the job was successfully acked.
 // It returns an error if the Redis script fails.
-func (c *Consumer) ackJob(ctx context.Context, job *Job) (bool, error) {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) ackJob(job *Job) (bool, error) {
 	keys := []string{
 		c.inflightSet,
 		c.queue.jobDataHash,
@@ -565,15 +566,13 @@ func (c *Consumer) ackJob(ctx context.Context, job *Job) (bool, error) {
 		job.ID,
 	}
 
-	return c.ackJobScript.Run(client, keys, args...).Bool()
+	return c.ackJobScript.Run(c.client, keys, args...).Bool()
 }
 
 // enqueueScheduledJobs enqueues jobs from the scheduled set that are ready to be run.
 // It returns the number of jobs that were scheduled.
 // It returns an error if the Redis script fails.
-func (c *Consumer) enqueueScheduledJobs(ctx context.Context) (int, error) {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) enqueueScheduledJobs() (int, error) {
 	keys := []string{
 		c.queue.scheduledJobsSet,
 		c.queue.activeJobsList,
@@ -584,15 +583,13 @@ func (c *Consumer) enqueueScheduledJobs(ctx context.Context) (int, error) {
 		c.opts.SchedulerMaxJobs,
 	}
 
-	return c.enqueueScheduledJobsScript.Run(client, keys, args...).Int()
+	return c.enqueueScheduledJobsScript.Run(c.client, keys, args...).Int()
 }
 
 // getJobs polls Redis for jobs that are ready to be processed.
 // It returns a slice of Jobs for this consumer to process on success.
 // It returns an error if the Redis script fails or it cannot parse the job data.
-func (c *Consumer) getJobs(ctx context.Context, count int) ([]*Job, error) {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) getJobs(count int) ([]*Job, error) {
 	keys := []string{
 		c.queue.activeJobsList,
 		c.inflightSet,
@@ -603,7 +600,7 @@ func (c *Consumer) getJobs(ctx context.Context, count int) ([]*Job, error) {
 		count,
 	}
 
-	result, err := c.getJobsScript.Run(client, keys, args...).Result()
+	result, err := c.getJobsScript.Run(c.client, keys, args...).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -626,15 +623,13 @@ func (c *Consumer) getJobs(ctx context.Context, count int) ([]*Job, error) {
 // killJob marks a job as permanently failed by moving it to the dead set.
 // It returns a boolean indicating if the job was successfully killed.
 // It returns an error if the Redis script fails or it cannot marshal the job.
-func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
+func (c *Consumer) killJob(job *Job) (bool, error) {
 	diedAt := float64(time.Now().Unix())
 	job.Attempt = job.Attempt + 1
 	msg, err := job.message()
 	if err != nil {
 		return false, err
 	}
-
-	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,
@@ -648,15 +643,13 @@ func (c *Consumer) killJob(ctx context.Context, job *Job) (bool, error) {
 		msg,
 	}
 
-	return c.killJobScript.Run(client, keys, args...).Bool()
+	return c.killJobScript.Run(c.client, keys, args...).Bool()
 }
 
 // pollActiveJobs blocks until jobs are in the queue in Redis.
 // It returns an error if it times out or the context is canceled.
-func (c *Consumer) pollActiveJobs(ctx context.Context) error {
-	client := c.client.WithContext(ctx)
-
-	return client.BRPopLPush(
+func (c *Consumer) pollActiveJobs() error {
+	return c.client.BRPopLPush(
 		c.queue.activeJobsList,
 		c.queue.activeJobsList,
 		c.opts.ExecutorsPollInterval,
@@ -665,9 +658,7 @@ func (c *Consumer) pollActiveJobs(ctx context.Context) error {
 
 // reenqueueActiveJobs reschedules jobs that are still unstarted at shutdown.
 // It returns an error if the Redis script fails.
-func (c *Consumer) reenqueueActiveJobs(ctx context.Context, jobs []*Job) error {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) reenqueueActiveJobs(jobs []*Job) error {
 	keys := []string{
 		c.inflightSet,
 		c.queue.activeJobsList,
@@ -678,15 +669,13 @@ func (c *Consumer) reenqueueActiveJobs(ctx context.Context, jobs []*Job) error {
 		args[idx] = job.ID
 	}
 
-	return c.reenqueueActiveJobsScript.Run(client, keys, args...).Err()
+	return c.reenqueueActiveJobsScript.Run(c.client, keys, args...).Err()
 }
 
 // rescheduleOrphanedJobs reschedules jobs orphaned by timed-out consumers.
 // It returns the total number of jobs that were rescheduled.
 // It returns an error if the Redis script fails.
-func (c *Consumer) reenqueueOrphanedJobs(ctx context.Context) (int, error) {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) reenqueueOrphanedJobs() (int, error) {
 	keys := []string{
 		c.queue.consumersSet,
 		c.queue.activeJobsList,
@@ -698,14 +687,12 @@ func (c *Consumer) reenqueueOrphanedJobs(ctx context.Context) (int, error) {
 		c.opts.CustodianMaxJobs,
 	}
 
-	return c.reenqueueOrphanedJobsScript.Run(client, keys, args...).Int()
+	return c.reenqueueOrphanedJobsScript.Run(c.client, keys, args...).Int()
 }
 
 // registerConsumer marks a consumer as active and visible to other consumers.
 // It returns an error if the Redis script fails.
-func (c *Consumer) registerConsumer(ctx context.Context) error {
-	client := c.client.WithContext(ctx)
-
+func (c *Consumer) registerConsumer() error {
 	keys := []string{
 		c.queue.consumersSet,
 	}
@@ -715,12 +702,12 @@ func (c *Consumer) registerConsumer(ctx context.Context) error {
 		c.inflightSet,
 	}
 
-	return c.registerConsumerScript.Run(client, keys, args...).Err()
+	return c.registerConsumerScript.Run(c.client, keys, args...).Err()
 }
 
 // retryJob reschedules a job that errored during execution.
 // It returns an error if the Redis script fails or it cannot marshal the job.
-func (c *Consumer) retryJob(ctx context.Context, job *Job) (bool, error) {
+func (c *Consumer) retryJob(job *Job) (bool, error) {
 	jitter := rand.Float64()
 	backoff := math.Pow(2, float64(job.Attempt)) + jitter
 	retryAt := float64(time.Now().Add(time.Duration(backoff) * time.Second).Unix())
@@ -729,8 +716,6 @@ func (c *Consumer) retryJob(ctx context.Context, job *Job) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-
-	client := c.client.WithContext(ctx)
 
 	keys := []string{
 		c.inflightSet,
@@ -744,7 +729,7 @@ func (c *Consumer) retryJob(ctx context.Context, job *Job) (bool, error) {
 		msg,
 	}
 
-	return c.retryJobScript.Run(client, keys, args...).Bool()
+	return c.retryJobScript.Run(c.client, keys, args...).Bool()
 }
 
 // Helpers
