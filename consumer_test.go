@@ -271,7 +271,7 @@ var _ = Describe("Consumer", func() {
 			resultsChan := make(chan []interface{}, 1)
 			stopChan := make(chan struct{})
 
-			ticker := time.NewTicker(100 * time.Millisecond)
+			ticker := time.NewTicker(500 * time.Millisecond)
 			go func() {
 				for {
 					select {
