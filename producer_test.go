@@ -120,6 +120,7 @@ var _ = Describe("Producer", func() {
 			producer = NewProducer(&ProducerOpts{
 				Client: client,
 				Queue:  queue,
+				Logger: &EmptyLogger{},
 			})
 
 			job = Job{
@@ -333,24 +334,25 @@ var _ = Describe("Producer", func() {
 	})
 
 	Describe("Redis operations", func() {
-		Describe("pushJob", func() {
-			var producer *Producer
-			var job Job
-			var ctx context.Context
+		var producer *Producer
+		var job Job
+		var ctx context.Context
 
-			BeforeEach(func() {
-				producer = NewProducer(&ProducerOpts{
-					Client: client,
-					Queue:  queue,
-				})
-
-				ctx = context.Background()
-				job = Job{
-					ID:   "TestID",
-					Data: []byte("TestData"),
-				}
+		BeforeEach(func() {
+			producer = NewProducer(&ProducerOpts{
+				Client: client,
+				Queue:  queue,
+				Logger: &EmptyLogger{},
 			})
 
+			ctx = context.Background()
+			job = Job{
+				ID:   "TestID",
+				Data: []byte("TestData"),
+			}
+		})
+
+		Describe("pushJob", func() {
 			It("Creates a new job and enqueues it", func() {
 				id, err := producer.pushJob(ctx, job)
 				Expect(err).NotTo(HaveOccurred())
@@ -412,22 +414,9 @@ var _ = Describe("Producer", func() {
 		})
 
 		Describe("scheduleJob", func() {
-			var producer *Producer
-			var job Job
-			var ctx context.Context
 			var at time.Time
 
 			BeforeEach(func() {
-				producer = NewProducer(&ProducerOpts{
-					Client: client,
-					Queue:  queue,
-				})
-
-				ctx = context.Background()
-				job = Job{
-					ID:   "TestID",
-					Data: []byte("TestData"),
-				}
 				at = time.Now()
 			})
 

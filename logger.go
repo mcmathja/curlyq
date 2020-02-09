@@ -47,3 +47,18 @@ func (l *DefaultLogger) Warn(args ...interface{}) {
 func (l *DefaultLogger) Error(args ...interface{}) {
 	log.Println(args...)
 }
+
+// EmptyLogger is a Logger that logs nothing.
+type EmptyLogger struct{}
+
+// Debug does nothing.
+func (l *EmptyLogger) Debug(args ...interface{}) {}
+
+// Info does nothing.
+func (l *EmptyLogger) Info(args ...interface{}) {}
+
+// Warn does nothing.
+func (l *EmptyLogger) Warn(args ...interface{}) {}
+
+// Error does nothing.
+func (l *EmptyLogger) Error(args ...interface{}) {}

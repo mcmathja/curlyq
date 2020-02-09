@@ -3,6 +3,7 @@ package curlyq
 import (
 	"context"
 	"fmt"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,9 +17,9 @@ import (
 )
 
 var _ = Describe("Consumer", func() {
+	var server *miniredis.Miniredis
 	var client *redis.Client
 	var queue string
-	var server *miniredis.Miniredis
 
 	BeforeEach(func() {
 		s, err := miniredis.Run()
@@ -35,351 +36,242 @@ var _ = Describe("Consumer", func() {
 
 	AfterEach(func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
-		server.Close()
+		go server.Close()
 	})
 
 	Describe("NewConsumer", func() {
-		var consumer *Consumer
+		It("Returns a valid consumer", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client: client,
+				Queue:  queue,
+			})
 
-		Context("When provided with valid values", func() {
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
+			Expect(consumer.client).To(Equal(client))
+			Expect(consumer.queue.name).To(Equal(queue))
+
+			id, err := uuid.FromString(consumer.id)
+			Expect(err).NotTo(HaveOccurred())
+
+			inflightSet := fmt.Sprintf("test_queue:inflight:%s", id)
+			Expect(consumer.inflightSet).To(Equal(inflightSet))
+		})
+
+		It("Loads all of the expected Lua scripts", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client: client,
+				Queue:  queue,
+			})
+
+			Expect(consumer.ackJobScript).NotTo(BeNil())
+			Expect(consumer.enqueueScheduledJobsScript).NotTo(BeNil())
+			Expect(consumer.getJobsScript).NotTo(BeNil())
+			Expect(consumer.killJobScript).NotTo(BeNil())
+			Expect(consumer.reenqueueActiveJobsScript).NotTo(BeNil())
+			Expect(consumer.reenqueueOrphanedJobsScript).NotTo(BeNil())
+			Expect(consumer.registerConsumerScript).NotTo(BeNil())
+			Expect(consumer.retryJobScript).NotTo(BeNil())
+		})
+
+		It("Generates a client based on the provided Address", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Address: server.Addr(),
+				Queue:   queue,
+			})
+
+			Expect(consumer.client).NotTo(Equal(client))
+
+			err := client.Set("a", "b", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := consumer.client.Get("a").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("b"))
+		})
+
+		It("Uses Client instead of Address when both are provided", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Address: "some.random.address",
+				Client:  client,
+				Queue:   queue,
+			})
+
+			Expect(consumer.client).To(Equal(client))
+		})
+
+		It("Panics when neither a redis client nor address is provided", func() {
+			Expect(func() {
+				NewConsumer(&ConsumerOpts{
+					Queue: queue,
+				})
+			}).To(Panic())
+		})
+
+		It("Panics when a queue is not provided", func() {
+			Expect(func() {
+				NewConsumer(&ConsumerOpts{
 					Client: client,
-					Queue:  queue,
 				})
-			})
-
-			It("Returns a valid consumer", func() {
-				Expect(consumer.client).To(Equal(client))
-				Expect(consumer.queue.name).To(Equal(queue))
-
-				id, err := uuid.FromString(consumer.id)
-				Expect(err).NotTo(HaveOccurred())
-
-				inflightSet := fmt.Sprintf("test_queue:inflight:%s", id)
-				Expect(consumer.inflightSet).To(Equal(inflightSet))
-			})
-
-			It("Loads all of the expected Lua scripts", func() {
-				Expect(consumer.ackJobScript).NotTo(BeNil())
-				Expect(consumer.enqueueScheduledJobsScript).NotTo(BeNil())
-				Expect(consumer.getJobsScript).NotTo(BeNil())
-				Expect(consumer.killJobScript).NotTo(BeNil())
-				Expect(consumer.reenqueueActiveJobsScript).NotTo(BeNil())
-				Expect(consumer.reenqueueOrphanedJobsScript).NotTo(BeNil())
-				Expect(consumer.registerConsumerScript).NotTo(BeNil())
-				Expect(consumer.retryJobScript).NotTo(BeNil())
-			})
-
-			It("Applies the correct default options", func() {
-				Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
-				Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
-				Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
-				Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
-				Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
-				Expect(consumer.opts.ExecutorsConcurrency).To(Equal(10))
-				Expect(consumer.opts.ExecutorsPollInterval).To(Equal(3 * time.Second))
-				Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
-				Expect(consumer.opts.ExecutorsMaxAttempts).To(Equal(5))
-				Expect(consumer.opts.HeartbeatInterval).To(Equal(1 * time.Minute))
-				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
-				Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
-				Expect(consumer.opts.SchedulerMaxJobs).To(Equal(50))
-			})
+			}).To(Panic())
 		})
 
-		Context("When an Address is provided", func() {
-			It("Generates a client based on the Address", func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Address: server.Addr(),
-					Queue:   queue,
-				})
-
-				Expect(consumer.client).NotTo(Equal(client))
-
-				err := client.Set("a", "b", 0).Err()
-				Expect(err).NotTo(HaveOccurred())
-
-				val, err := consumer.client.Get("a").Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(val).To(Equal("b"))
+		It("Applies the correct default options", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client: client,
+				Queue:  queue,
 			})
 
-			Context("When a Client is also provided", func() {
-				It("Uses the provided value for Client", func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Address: "some.random.address",
-						Client:  client,
-						Queue:   queue,
-					})
-
-					Expect(consumer.client).To(Equal(client))
-				})
-			})
+			Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
+			Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
+			Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
+			Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
+			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
+			Expect(consumer.opts.ExecutorsConcurrency).To(Equal(10))
+			Expect(consumer.opts.ExecutorsPollInterval).To(Equal(3 * time.Second))
+			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
+			Expect(consumer.opts.ExecutorsMaxAttempts).To(Equal(5))
+			Expect(consumer.opts.HeartbeatInterval).To(Equal(1 * time.Minute))
+			Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
+			Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
+			Expect(consumer.opts.SchedulerMaxJobs).To(Equal(50))
 		})
 
-		Context("When options are provided that are below minimum values", func() {
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Client:                   client,
-					Queue:                    queue,
-					CustodianConsumerTimeout: 1 * time.Second,
-					HeartbeatInterval:        1 * time.Second,
-				})
+		It("Applies defaults based on other options", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client:               client,
+				Queue:                queue,
+				ExecutorsConcurrency: 25,
 			})
 
-			It("Applies the minimum values", func() {
-				Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(5 * time.Second))
-				Expect(consumer.opts.HeartbeatInterval).To(Equal(15 * time.Second))
-			})
+			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(25))
 		})
 
-		Context("When options are applied that affect other options", func() {
-			Context("And the other options are not set", func() {
-				BeforeEach(func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Client:               client,
-						Queue:                queue,
-						ExecutorsConcurrency: 25,
-					})
-				})
-
-				It("Applies the correct values to the other options", func() {
-					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(25))
-				})
+		It("Does not override with defaults based on other options when specified", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client:               client,
+				Queue:                queue,
+				ExecutorsConcurrency: 25,
+				ExecutorsBufferSize:  10,
 			})
 
-			Context("And the other options are set", func() {
-				BeforeEach(func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Client:               client,
-						Queue:                queue,
-						ExecutorsConcurrency: 25,
-						ExecutorsBufferSize:  10,
-					})
-				})
-
-				It("Retains the values of the other options", func() {
-					Expect(consumer.opts.ExecutorsConcurrency).To(Equal(25))
-					Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
-				})
-			})
+			Expect(consumer.opts.ExecutorsConcurrency).To(Equal(25))
+			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
 		})
 
-		Context("When a redis client is not provided", func() {
-			It("Panics", func() {
-				Expect(func() {
-					NewConsumer(&ConsumerOpts{
-						Queue: queue,
-					})
-				}).To(Panic())
+		It("Applies the minimum values to relevant options", func() {
+			consumer := NewConsumer(&ConsumerOpts{
+				Client:                   client,
+				Queue:                    queue,
+				CustodianConsumerTimeout: 1 * time.Second,
+				HeartbeatInterval:        1 * time.Second,
 			})
-		})
 
-		Context("When a queue is not provided", func() {
-			It("Panics", func() {
-				Expect(func() {
-					NewConsumer(&ConsumerOpts{
-						Client: client,
-					})
-				}).To(Panic())
-			})
+			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(5 * time.Second))
+			Expect(consumer.opts.HeartbeatInterval).To(Equal(15 * time.Second))
 		})
 	})
 
 	Describe("Public API", func() {
 		var consumer *Consumer
 
-		BeforeEach(func() {
-			consumer = NewConsumer(&ConsumerOpts{
-				Client: client,
-				Queue:  queue,
-			})
+		createJobs := func(count int, attempt int) []*Job {
+			jobs := make([]*Job, count)
+			for idx := 0; idx < count; idx++ {
+				uid, err := uuid.NewV4()
+				Expect(err).NotTo(HaveOccurred())
 
-			job := &Job{
-				ID:      "job-1",
-				Attempt: 0,
-				Data:    []byte("A number!"),
+				id := uid.String()
+				data := []byte(id)
+				jobs[idx] = &Job{
+					ID:      id,
+					Attempt: attempt,
+					Data:    data,
+				}
 			}
-			msg, err := job.message()
+
+			return jobs
+		}
+
+		extractIds := func(jobs []*Job) []string {
+			ids := make([]string, len(jobs))
+			for idx, job := range jobs {
+				ids[idx] = job.ID
+			}
+			return ids
+		}
+
+		enqueueJobs := func(jobs []*Job) {
+			var err error
+			hashData := map[string]interface{}{}
+			jobIDs := make([]interface{}, len(jobs))
+			for idx, job := range jobs {
+				msg, err := job.message()
+				Expect(err).NotTo(HaveOccurred())
+
+				jobIDs[idx] = job.ID
+				hashData[job.ID] = msg
+			}
+
+			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.HSet(consumer.queue.jobDataHash, job.ID, msg).Err()
+			err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		scheduleJobs := func(jobs []*Job, at time.Time) {
+			var err error
+			hashData := map[string]interface{}{}
+			jobEntries := make([]redis.Z, len(jobs))
+			for idx, job := range jobs {
+				msg, err := job.message()
+				Expect(err).NotTo(HaveOccurred())
+
+				hashData[job.ID] = msg
+				jobEntries[idx] = redis.Z{
+					Score:  float64(at.Unix()),
+					Member: job.ID,
+				}
+			}
+
+			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.RPush(consumer.queue.activeJobsList, job.ID).Err()
+			err = client.ZAdd(consumer.queue.scheduledJobsSet, jobEntries...).Err()
 			Expect(err).NotTo(HaveOccurred())
-		})
+		}
 
-		Describe("ConsumeCtx", func() {
-			It("Shuts down cleanly when the context is canceled", func() {
-				startJob := make(chan struct{})
-				processErrors := make(chan error)
-				ctx, cancel := context.WithCancel(context.Background())
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
-					}()
+		assignJobs := func(jobs []*Job, consumer *Consumer) {
+			var err error
+			hashData := map[string]interface{}{}
+			jobIDs := make([]interface{}, len(jobs))
+			for idx, job := range jobs {
+				msg, err := job.message()
+				Expect(err).NotTo(HaveOccurred())
 
-					processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
-						startJob <- struct{}{}
-						return nil
-					})
-				}()
+				jobIDs[idx] = job.ID
+				hashData[job.ID] = msg
+			}
 
-				<-startJob
-				cancel()
-				Eventually(processErrors).Should(Receive(BeNil()))
-			})
+			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+			Expect(err).NotTo(HaveOccurred())
 
-			Context("When a job runs longer than ShutdownGracePeriod", func() {
-				BeforeEach(func() {
-					consumer.opts.ShutdownGracePeriod = 500 * time.Millisecond
-				})
+			err = client.SAdd(consumer.inflightSet, jobIDs...).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
 
-				It("Returns an error", func() {
-					startJob := make(chan struct{})
-					stopJob := make(chan struct{})
-					processErrors := make(chan error)
-					ctx, cancel := context.WithCancel(context.Background())
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
+		registerConsumer := func(consumer *Consumer, at time.Time) {
+			err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+				Score:  float64(at.Unix()),
+				Member: consumer.inflightSet,
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
 
-						processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							<-stopJob
-							return nil
-						})
-					}()
-
-					<-startJob
-					cancel()
-					Eventually(processErrors).Should(Receive(HaveOccurred()))
-					stopJob <- struct{}{}
-				})
-			})
-
-			Context("When an abort is signaled", func() {
-				It("Returns an error", func() {
-					startJob := make(chan struct{})
-					processErrors := make(chan error)
-					ctx := context.Background()
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
-
-						processErrors <- consumer.ConsumeCtx(ctx, func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							return nil
-						})
-					}()
-
-					<-startJob
-					err := fmt.Errorf("Abort!")
-					consumer.abort(err)
-					Eventually(processErrors).Should(Receive(MatchError(err)))
-				})
-			})
-		})
-
-		Describe("Consume", func() {
-			It("Shuts down cleanly when the process is killed", func() {
-				startJob := make(chan struct{})
-				processErrors := make(chan error)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
-					}()
-
-					processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
-						startJob <- struct{}{}
-						return nil
-					}, syscall.SIGUSR1)
-				}()
-
-				<-startJob
-				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
-				Eventually(processErrors).Should(Receive(BeNil()))
-			})
-
-			Context("When a job runs longer than ShutdownGracePeriod", func() {
-				BeforeEach(func() {
-					consumer.opts.ShutdownGracePeriod = 500 * time.Millisecond
-				})
-
-				It("Returns an error", func() {
-					startJob := make(chan struct{})
-					stopJob := make(chan struct{})
-					processErrors := make(chan error)
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
-
-						processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							<-stopJob
-							return nil
-						}, syscall.SIGUSR1)
-					}()
-
-					<-startJob
-					syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
-					Eventually(processErrors).Should(Receive(HaveOccurred()))
-					stopJob <- struct{}{}
-				})
-			})
-
-			Context("When an abort is signaled", func() {
-				It("Returns an error", func() {
-					startJob := make(chan struct{})
-					processErrors := make(chan error)
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
-
-						processErrors <- consumer.Consume(func(ctx context.Context, job Job) error {
-							startJob <- struct{}{}
-							return nil
-						})
-					}()
-
-					<-startJob
-					err := fmt.Errorf("Abort!")
-					consumer.abort(err)
-					Eventually(processErrors).Should(Receive(MatchError(err)))
-				})
-			})
-		})
-	})
-
-	Describe("Processing Loops", func() {
-		var consumer *Consumer
-		var ctx context.Context
-		var cancel context.CancelFunc
-		var processErrors chan error
-
-		poller := func(duration time.Duration, poll func() []interface{}) (chan []interface{}, chan struct{}) {
+		poller := func(poll func() []interface{}) (chan []interface{}, chan struct{}) {
 			resultsChan := make(chan []interface{}, 1)
 			stopChan := make(chan struct{})
 
-			ticker := time.NewTicker(duration)
+			ticker := time.NewTicker(100 * time.Millisecond)
 			go func() {
 				for {
 					select {
@@ -399,738 +291,506 @@ var _ = Describe("Consumer", func() {
 			return resultsChan, stopChan
 		}
 
+		activeJobsPoller := func() (chan []interface{}, chan struct{}) {
+			return poller(func() []interface{} {
+				activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				results := make([]interface{}, len(activeJobs))
+				for idx, job := range activeJobs {
+					results[idx] = job
+				}
+
+				return results
+			})
+		}
+
+		scheduledJobsPoller := func() (chan []interface{}, chan struct{}) {
+			return poller(func() []interface{} {
+				scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				results := make([]interface{}, len(scheduledJobs))
+				for idx, job := range scheduledJobs {
+					results[idx] = job
+				}
+
+				return results
+			})
+		}
+
+		deadJobsPoller := func() (chan []interface{}, chan struct{}) {
+			return poller(func() []interface{} {
+				deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				results := make([]interface{}, len(deadJobs))
+				for idx, job := range deadJobs {
+					results[idx] = job
+				}
+
+				return results
+			})
+		}
+
+		inflightJobsPoller := func(c *Consumer) (chan []interface{}, chan struct{}) {
+			return poller(func() []interface{} {
+				inflightJobs, err := client.SMembers(c.inflightSet).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				results := make([]interface{}, len(inflightJobs))
+				for idx, job := range inflightJobs {
+					results[idx] = job
+				}
+
+				return results
+			})
+		}
+
+		consumersPoller := func() (chan []interface{}, chan struct{}) {
+			return poller(func() []interface{} {
+				consumers, err := client.ZRangeWithScores(consumer.queue.consumersSet, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				results := make([]interface{}, len(consumers))
+				for idx, consumer := range consumers {
+					results[idx] = consumer
+				}
+
+				return results
+			})
+		}
+
+		processedJobsPoller := func() (chan []string, chan string) {
+			lock := &sync.Mutex{}
+			ids := []string{}
+			ticker := time.NewTicker(100 * time.Millisecond)
+			succeeded := make(chan []string)
+			processed := make(chan string)
+
+			go func() {
+				for id := range processed {
+					lock.Lock()
+					ids = append(ids, id)
+					lock.Unlock()
+				}
+				ticker.Stop()
+			}()
+
+			go func() {
+				for range ticker.C {
+					lock.Lock()
+					succeeded <- ids
+					lock.Unlock()
+				}
+			}()
+
+			return succeeded, processed
+		}
+
 		BeforeEach(func() {
-			ctx, cancel = context.WithCancel(context.Background())
-			processErrors = make(chan error, 0)
+			consumer = NewConsumer(&ConsumerOpts{
+				Client:                client,
+				Queue:                 queue,
+				Logger:                &EmptyLogger{},
+				ShutdownGracePeriod:   2 * time.Second,
+				ExecutorsConcurrency:  2,
+				ExecutorsBufferSize:   4,
+				ExecutorsPollInterval: 1 * time.Second,
+				ExecutorsMaxAttempts:  10,
+			})
 		})
 
 		AfterEach(func() {
-			cancel()
 			consumer.processes.Wait()
-			Eventually(processErrors).Should(Receive(BeNil()))
 		})
 
-		Describe("runPoller", func() {
-			var start func()
-			var addJobs func(jobs []*Job)
-			var buffer chan *Job
-
-			BeforeEach(func() {
-				start = func() {
-					consumer.processes.Add(1)
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
-
-						consumer.runPoller(ctx, buffer)
-						processErrors <- nil
-					}()
-				}
-
-				addJobs = func(jobs []*Job) {
-					var err error
-					hashData := map[string]interface{}{}
-					jobIDs := make([]interface{}, len(jobs))
-					for idx, job := range jobs {
-						msg, err := job.message()
-						Expect(err).NotTo(HaveOccurred())
-
-						jobIDs[idx] = job.ID
-						hashData[job.ID] = msg
-					}
-
-					err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
-					Expect(err).NotTo(HaveOccurred())
-				}
-			})
-
-			Context("When the context is canceled", func() {
-				BeforeEach(func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Client:              client,
-						Queue:               queue,
-						ExecutorsBufferSize: 5,
-					})
-					buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
-				})
-
-				It("Shuts down cleanly", func() {
-					start()
-					cancel()
-				})
-
-				It("Reenqueues jobs on the queue", func() {
-					addJobs([]*Job{
-						{ID: "job-1"},
-						{ID: "job-2"},
-						{ID: "job-3"},
-						{ID: "job-4"},
-						{ID: "job-5"},
-						{ID: "job-6"},
-						{ID: "job-7"},
-						{ID: "job-8"},
-						{ID: "job-9"},
-						{ID: "job-10"},
-					})
-
-					active, stopPolling := poller(100*time.Millisecond, func() []interface{} {
-						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-
-						results := make([]interface{}, len(activeJobs))
-						for idx, job := range activeJobs {
-							results[idx] = job
-						}
-
-						return results
-					})
-
-					start()
-
-					Eventually(active).Should(Receive(ConsistOf([]string{
-						"job-6",
-						"job-7",
-						"job-8",
-						"job-9",
-						"job-10",
-					})))
-
-					// Cancel the process and wait until the queue is drained.
-					cancel()
-					Eventually(active).Should(Receive(ConsistOf([]string{
-						"job-6",
-						"job-7",
-						"job-8",
-						"job-9",
-						"job-10",
-						"job-1",
-						"job-2",
-						"job-3",
-						"job-4",
-						"job-5",
-					})))
-
-					// Allow the in-process job to proceed.
-					close(stopPolling)
-				})
-			})
-
-			Context("When jobs are on the queue", func() {
-				BeforeEach(func() {
-					consumer = NewConsumer(&ConsumerOpts{
-						Client:              client,
-						Queue:               queue,
-						ExecutorsBufferSize: 5,
-					})
-					buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
-				})
-
-				It("Buffers jobs that are already on the queue when it starts", func() {
-					jobs := []*Job{
-						{ID: "1"},
-						{ID: "2"},
-						{ID: "3"},
-					}
-
-					addJobs(jobs)
-
-					start()
-					Eventually(buffer).Should(Receive(Equal(jobs[0])))
-					Eventually(buffer).Should(Receive(Equal(jobs[1])))
-					Eventually(buffer).Should(Receive(Equal(jobs[2])))
-				})
-
-				It("Buffers jobs that are added after it starts", func() {
-					start()
-
-					jobs := []*Job{
-						{ID: "1"},
-						{ID: "2"},
-						{ID: "3"},
-					}
-
-					addJobs(jobs)
-
-					Eventually(buffer).Should(Receive(Equal(jobs[0])))
-					Eventually(buffer).Should(Receive(Equal(jobs[1])))
-					Eventually(buffer).Should(Receive(Equal(jobs[2])))
-				})
-
-				Context("When there are more jobs on the queue than we can buffer in one go", func() {
-					BeforeEach(func() {
-						consumer = NewConsumer(&ConsumerOpts{
-							Client:                client,
-							Queue:                 queue,
-							ExecutorsBufferSize:   2,
-							ExecutorsPollInterval: 100 * time.Millisecond,
-						})
-						buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
-					})
-
-					It("Continues polling until it buffers all of them", func() {
-						start()
-
-						jobs := []*Job{
-							{ID: "1"},
-							{ID: "2"},
-							{ID: "3"},
-						}
-
-						addJobs(jobs)
-
-						Eventually(buffer).Should(Receive(Equal(jobs[0])))
-						Eventually(buffer).Should(Receive(Equal(jobs[1])))
-						Eventually(buffer).Should(Receive(Equal(jobs[2])))
-					})
-				})
-			})
-		})
-
-		Describe("runProcessor", func() {
-			var start func(handler HandlerFunc)
-			var addJobs func(jobs []*Job)
-			var buffer chan *Job
-
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Client:               client,
-					Queue:                queue,
-					ExecutorsBufferSize:  3,
-					ExecutorsMaxAttempts: 5,
-				})
-				buffer = make(chan *Job, consumer.opts.ExecutorsBufferSize)
-
-				start = func(handler HandlerFunc) {
-					consumer.processes.Add(1)
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								processErrors <- fmt.Errorf("%v", r)
-							}
-						}()
-
-						consumer.runProcessor(ctx, buffer, handler)
-						processErrors <- nil
-					}()
-				}
-
-				addJobs = func(jobs []*Job) {
-					var err error
-
-					hashData := map[string]interface{}{}
-					jobIDs := make([]interface{}, len(jobs))
-					for idx, job := range jobs {
-						msg, err := job.message()
-						Expect(err).NotTo(HaveOccurred())
-
-						jobIDs[idx] = job.ID
-						hashData[job.ID] = msg
-					}
-
-					err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = client.SAdd(consumer.inflightSet, jobIDs...).Err()
-					Expect(err).NotTo(HaveOccurred())
-
-					go func() {
-						for _, job := range jobs {
-							buffer <- job
-						}
-					}()
-				}
-			})
-
-			Context("When the context is canceled", func() {
-				It("Shuts down cleanly", func() {
-					start(func(ctx context.Context, job Job) error {
-						return nil
-					})
-					cancel()
-					consumer.processes.Wait()
-				})
-			})
-
-			Context("When the buffer is closed", func() {
-				It("Shuts down cleanly", func() {
-					start(func(ctx context.Context, job Job) error {
-						return nil
-					})
-					close(buffer)
-					consumer.processes.Wait()
-				})
-			})
-
-			It("Processes jobs", func() {
-				processed := make(chan string)
-				defer close(processed)
-
-				results := make(chan []string)
-				defer close(results)
-
-				jobs := []*Job{
-					{ID: "0"},
-					{ID: "1"},
-					{ID: "2"},
-					{ID: "3"},
-					{ID: "4"},
-					{ID: "5"},
-					{ID: "6"},
-					{ID: "7"},
-					{ID: "8"},
-					{ID: "9"},
-				}
-
+		Describe("Consume", func() {
+			start := func(handler HandlerFunc) chan error {
+				errors := make(chan error)
 				go func() {
-					processedJobs := []string{}
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case jobID, ok := <-processed:
-							if !ok {
-								return
-							}
-
-							processedJobs = append(processedJobs, jobID)
-							results <- processedJobs
-						}
-					}
+					errors <- consumer.Consume(handler, syscall.SIGUSR1)
 				}()
 
-				addJobs(jobs[:5])
+				return errors
+			}
 
-				start(func(ctx context.Context, job Job) error {
+			It("Shuts down when the process is killed", func() {
+				block := make(chan struct{})
+
+				consumer.opts.ShutdownGracePeriod = 5 * time.Second
+				errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+				close(block)
+				Eventually(errors).Should(Receive(BeNil()))
+			})
+
+			It("Returns an error when a job doesn't finish in ShutdownGracePeriod", func() {
+				block := make(chan struct{})
+
+				errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					<-block
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+				Eventually(errors).Should(Receive(HaveOccurred()))
+				close(block)
+			})
+
+			It("Bubbles up errors from the underlying ConsumeCtx", func() {
+				block := make(chan struct{})
+
+				errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					go server.Close()
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				Eventually(errors).Should(Receive(BeAssignableToTypeOf(ErrFailedToAckJob{})))
+				close(block)
+			})
+		})
+
+		Describe("ConsumeCtx", func() {
+			start := func(handler HandlerFunc) (context.CancelFunc, chan error) {
+				errors := make(chan error)
+				ctx, cancel := context.WithCancel(context.Background())
+				go func() {
+					errors <- consumer.ConsumeCtx(ctx, handler)
+				}()
+
+				return cancel, errors
+			}
+
+			It("Shuts down when the context is canceled", func() {
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+
+				cancel()
+				Eventually(errors).Should(Receive(BeNil()))
+			})
+
+			It("Returns an error when a job doesn't finish in ShutdownGracePeriod", func() {
+				block := make(chan struct{})
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					<-block
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				cancel()
+				Eventually(errors).Should(Receive(HaveOccurred()))
+				close(block)
+			})
+
+			It("Processes jobs off the queue", func() {
+				jobs := createJobs(5, 0)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				succeeded, processed := processedJobsPoller()
+				defer close(processed)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					processed <- job.ID
+					return nil
+				})
+				defer cancel()
+
+				Eventually(active).Should(Receive(BeEmpty()))
+				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(jobs))))
+			})
+
+			It("Reschedules jobs that return an error with less than ExecutorsMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts-1)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				scheduled, stopPollingScheduled := scheduledJobsPoller()
+				defer close(stopPollingScheduled)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					return fmt.Errorf("Retry")
+				})
+				defer cancel()
+
+				Eventually(active).Should(Receive(BeEmpty()))
+				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
+			})
+
+			It("Reschedules jobs that panic with less than ExecutorsMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts-1)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				scheduled, stopPollingScheduled := scheduledJobsPoller()
+				defer close(stopPollingScheduled)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					panic("Retry")
+				})
+				defer cancel()
+
+				Eventually(active).Should(Receive(BeEmpty()))
+				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
+			})
+
+			It("Kill jobs that return an error after ExecutorsMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				dead, stopPollingDead := deadJobsPoller()
+				defer close(stopPollingDead)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					return fmt.Errorf("Fail")
+				})
+				defer cancel()
+
+				Eventually(active).Should(Receive(BeEmpty()))
+				Eventually(dead).Should(Receive(ConsistOf(extractIds(jobs))))
+			})
+
+			It("Kills jobs that panic after ExecutorsMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				dead, stopPollingDead := deadJobsPoller()
+				defer close(stopPollingDead)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					panic("Fail")
+				})
+				defer cancel()
+
+				Eventually(active).Should(Receive(BeEmpty()))
+				Eventually(dead).Should(Receive(ConsistOf(extractIds(jobs))))
+			})
+
+			It("Reenqueues jobs when shutting down", func() {
+				running := make(chan struct{})
+				block := make(chan struct{})
+
+				jobs := createJobs(10, consumer.opts.ExecutorsMaxAttempts)
+				ids := extractIds(jobs)
+				enqueueJobs(jobs)
+
+				active, stopPollingActive := activeJobsPoller()
+				defer close(stopPollingActive)
+
+				succeeded, processed := processedJobsPoller()
+				defer close(processed)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					running <- struct{}{}
+					<-block
 					processed <- job.ID
 					return nil
 				})
 
-				Eventually(results).Should(Receive(ConsistOf([]string{
-					jobs[0].ID,
-					jobs[1].ID,
-					jobs[2].ID,
-					jobs[3].ID,
-					jobs[4].ID,
-				})))
-
-				addJobs(jobs[5:])
-
-				Eventually(results).Should(Receive(ConsistOf([]string{
-					jobs[0].ID,
-					jobs[1].ID,
-					jobs[2].ID,
-					jobs[3].ID,
-					jobs[4].ID,
-					jobs[5].ID,
-					jobs[6].ID,
-					jobs[7].ID,
-					jobs[8].ID,
-					jobs[9].ID,
-				})))
-			})
-
-			It("Retries jobs that return an error or panic", func() {
-				retried, stopPollingRetried := poller(100*time.Millisecond, func() []interface{} {
-					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
-					Expect(err).NotTo(HaveOccurred())
-
-					results := make([]interface{}, len(scheduledJobs))
-					for idx, job := range scheduledJobs {
-						results[idx] = job
-					}
-
-					return results
-				})
-				defer close(stopPollingRetried)
-
-				start(func(ctx context.Context, job Job) error {
-					if job.ID == "retried" {
-						return fmt.Errorf("Retried")
-					}
-
-					if job.ID == "failed" {
-						panic("Failed")
-					}
-
-					return nil
-				})
-
-				jobs := []*Job{
-					{ID: "retried"},
-					{ID: "failed"},
+				for i := 0; i < consumer.opts.ExecutorsConcurrency; i++ {
+					<-running
 				}
 
-				addJobs(jobs)
-
-				Eventually(retried).Should(Receive(ConsistOf([]string{
-					jobs[0].ID,
-					jobs[1].ID,
+				Eventually(active).Should(Receive(ConsistOf(ids[4:8])))
+				cancel()
+				Eventually(active).Should(Receive(ConsistOf(ids[1:9])))
+				close(block)
+				Eventually(succeeded).Should(Receive(ConsistOf([]string{
+					ids[0],
+					ids[9],
 				})))
+				close(running)
 			})
 
-			It("Kills jobs that return an error or panic after ExecutorsMaxAttempts attempts", func() {
-				killed, stopPollingKilled := poller(100*time.Millisecond, func() []interface{} {
-					deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
-					Expect(err).NotTo(HaveOccurred())
+			It("Aborts if it cannot acknowledge a job", func() {
+				block := make(chan struct{})
+				jobs := createJobs(1, 0)
+				enqueueJobs(jobs)
 
-					results := make([]interface{}, len(deadJobs))
-					for idx, job := range deadJobs {
-						results[idx] = job
-					}
-
-					return results
-				})
-				defer close(stopPollingKilled)
-
-				start(func(ctx context.Context, job Job) error {
-					if job.ID == "retried" {
-						return fmt.Errorf("Retried")
-					}
-
-					if job.ID == "failed" {
-						panic("Failed")
-					}
-
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					go server.Close()
 					return nil
 				})
+				defer cancel()
 
-				jobs := []*Job{
-					{ID: "retried", Attempt: consumer.opts.ExecutorsMaxAttempts},
-					{ID: "failed", Attempt: consumer.opts.ExecutorsMaxAttempts},
-				}
-
-				addJobs(jobs)
-
-				Eventually(killed).Should(Receive(ConsistOf([]string{
-					jobs[0].ID,
-					jobs[1].ID,
-				})))
-			})
-
-			It("Aborts when a retry fails", func() {
-				addJobs([]*Job{{
-					ID:      "test",
-					Attempt: 2,
-					Data:    []byte("test"),
-				}})
-
-				err := fmt.Errorf("Failed")
-				startJob := make(chan struct{})
-				defer close(startJob)
-
-				start(func(ctx context.Context, job Job) error {
-					startJob <- struct{}{}
-					server.Close()
-					return err
-				})
-
-				<-startJob
-				Eventually(consumer.errors).Should(Receive(And(
-					BeAssignableToTypeOf(ErrFailedToRetryJob{}),
-					MatchAllFields(Fields{
-						"Job": Equal(Job{
-							ID:      "test",
-							Attempt: 3,
-							Data:    []byte("test"),
-						}),
-						"Err": HaveOccurred(),
-					}),
-				)))
-			})
-
-			It("Aborts when a kill fails", func() {
-				addJobs([]*Job{{
-					ID:      "test",
-					Attempt: consumer.opts.ExecutorsMaxAttempts,
-					Data:    []byte("test"),
-				}})
-
-				err := fmt.Errorf("Failed")
-				startJob := make(chan struct{})
-				defer close(startJob)
-
-				start(func(ctx context.Context, job Job) error {
-					startJob <- struct{}{}
-					server.Close()
-					return err
-				})
-
-				<-startJob
-				Eventually(consumer.errors).Should(Receive(And(
-					BeAssignableToTypeOf(ErrFailedToKillJob{}),
-					MatchAllFields(Fields{
-						"Job": Equal(Job{
-							ID:      "test",
-							Attempt: consumer.opts.ExecutorsMaxAttempts + 1,
-							Data:    []byte("test"),
-						}),
-						"Err": HaveOccurred(),
-					}),
-				)))
-			})
-
-			It("Aborts when an ack fails", func() {
-				addJobs([]*Job{{
-					ID:      "test",
-					Attempt: 1,
-					Data:    []byte("test"),
-				}})
-
-				startJob := make(chan struct{})
-				defer close(startJob)
-
-				start(func(ctx context.Context, job Job) error {
-					startJob <- struct{}{}
-					server.Close()
-					return nil
-				})
-
-				<-startJob
-				Eventually(consumer.errors).Should(Receive(And(
+				<-block
+				Eventually(errors).Should(Receive(And(
 					BeAssignableToTypeOf(ErrFailedToAckJob{}),
 					MatchAllFields(Fields{
 						"Job": Equal(Job{
-							ID:      "test",
-							Attempt: 1,
-							Data:    []byte("test"),
+							ID:      jobs[0].ID,
+							Attempt: jobs[0].Attempt,
+							Data:    jobs[0].Data,
 						}),
 						"Err": HaveOccurred(),
 					}),
 				)))
 			})
-		})
 
-		Describe("runHeartbeat", func() {
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Client: client,
-					Queue:  queue,
+			It("Aborts if it cannot retry a job", func() {
+				block := make(chan struct{})
+				jobs := createJobs(1, 0)
+				enqueueJobs(jobs)
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					go server.Close()
+					return fmt.Errorf("Error")
 				})
+				defer cancel()
 
-				// Force a lower heartbeat interval for testing purposes.
-				consumer.opts.HeartbeatInterval = 100 * time.Millisecond
-
-				consumer.processes.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
-					}()
-
-					consumer.runHeartbeat(ctx)
-					processErrors <- nil
-				}()
+				<-block
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrFailedToRetryJob{}),
+					MatchAllFields(Fields{
+						"Job": Equal(Job{
+							ID:      jobs[0].ID,
+							Attempt: jobs[0].Attempt + 1,
+							Data:    jobs[0].Data,
+						}),
+						"Err": HaveOccurred(),
+					}),
+				)))
 			})
 
-			It("Shuts down cleanly when the context is canceled", func() {
-				cancel()
+			It("Aborts if it cannot kill a job", func() {
+				block := make(chan struct{})
+				jobs := createJobs(1, consumer.opts.ExecutorsMaxAttempts)
+				enqueueJobs(jobs)
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					go server.Close()
+					return fmt.Errorf("Error")
+				})
+				defer cancel()
+
+				<-block
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrFailedToKillJob{}),
+					MatchAllFields(Fields{
+						"Job": Equal(Job{
+							ID:      jobs[0].ID,
+							Attempt: jobs[0].Attempt + 1,
+							Data:    jobs[0].Data,
+						}),
+						"Err": HaveOccurred(),
+					}),
+				)))
 			})
 
 			It("Periodically updates the heartbeat", func() {
+				consumers, stopPollingConsumers := consumersPoller()
+				defer close(stopPollingConsumers)
+
+				consumer.opts.HeartbeatInterval = 100 * time.Millisecond
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
 				var previouslySeenAt float64
-
-				lastSeenAt, stopPolling := poller(100*time.Millisecond, func() []interface{} {
-					score, err := client.ZScore(consumer.queue.consumersSet, consumer.inflightSet).Result()
-					Expect(err).NotTo(HaveOccurred())
-
-					return []interface{}{
-						score,
-					}
-				})
-
 				for i := 0; i < 2; i++ {
-					Eventually(lastSeenAt).Should(Receive(ConsistOf(BeNumerically(">", previouslySeenAt))))
-					previouslySeenAt = (<-lastSeenAt)[0].(float64)
+					Eventually(consumers).Should(Receive(ConsistOf(MatchAllFields(Fields{
+						"Member": Equal(consumer.inflightSet),
+						"Score":  BeNumerically(">", previouslySeenAt),
+					}))))
+					previouslySeenAt = (<-consumers)[0].(redis.Z).Score
 				}
-
-				// Clean up
-				close(stopPolling)
-			})
-		})
-
-		Describe("runScheduler", func() {
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Client:                client,
-					Queue:                 queue,
-					SchedulerPollInterval: 100 * time.Millisecond,
-				})
-
-				consumer.processes.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
-					}()
-
-					consumer.runScheduler(ctx)
-					processErrors <- nil
-				}()
 			})
 
-			It("Shuts down cleanly when the context is canceled", func() {
-				cancel()
+			It("Enqueues scheduled jobs that are due to be run", func() {
+				dueJobs := createJobs(5, 0)
+				laterJobs := createJobs(5, 0)
+				scheduleJobs(dueJobs, time.Now())
+				scheduleJobs(laterJobs, time.Now().Add(5*time.Minute))
+
+				scheduled, stopPollingScheduled := scheduledJobsPoller()
+				defer close(stopPollingScheduled)
+
+				succeeded, processed := processedJobsPoller()
+				defer close(processed)
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					processed <- job.ID
+					return nil
+				})
+				defer cancel()
+
+				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(dueJobs))))
+				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(laterJobs))))
 			})
 
-			Context("When scheduled jobs are ready to be run", func() {
-				addJob := func(id string, at time.Time) {
-					err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
-						Score:  float64(at.Unix()),
-						Member: id,
-					}).Err()
-					Expect(err).NotTo(HaveOccurred())
-				}
+			It("Cleans up jobs orphaned by dead consumers", func() {
+				inflightJobs := createJobs(5, 0)
+				orphanedJobs := createJobs(5, 0)
 
-				BeforeEach(func() {
-					for i := 1; i < 5; i++ {
-						id := fmt.Sprintf("job_id-%d", i)
-						at := time.Now().Add(time.Duration(i) * time.Minute)
-						if i <= 2 {
-							at = at.Add(-5 * time.Minute)
-						}
-
-						addJob(id, at)
-					}
+				deadConsumer := NewConsumer(&ConsumerOpts{
+					Client: client,
+					Queue:  queue,
 				})
+				timeoutInterval := consumer.opts.HeartbeatInterval + consumer.opts.CustodianConsumerTimeout
+				registerConsumer(deadConsumer, time.Now().Add(-timeoutInterval))
+				assignJobs(orphanedJobs, deadConsumer)
 
-				It("Enqueues them", func() {
-					jobIDs, stopPolling := poller(100*time.Millisecond, func() []interface{} {
-						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-
-						results := make([]interface{}, len(activeJobs))
-						for idx, job := range activeJobs {
-							results[idx] = job
-						}
-
-						return results
-					})
-
-					// Test that we get only the initial jobs that are schedulable.
-					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
-						"job_id-1",
-						"job_id-2",
-					})))
-
-					// Test that we get another job that is added later.
-					addJob("another_job", time.Now().Add(time.Millisecond))
-					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
-						"job_id-1",
-						"job_id-2",
-						"another_job",
-					})))
-
-					// Clean up
-					close(stopPolling)
+				liveConsumer := NewConsumer(&ConsumerOpts{
+					Client: client,
+					Queue:  queue,
 				})
-			})
-		})
+				registerConsumer(liveConsumer, time.Now())
+				assignJobs(inflightJobs, liveConsumer)
 
-		Describe("runCustodian", func() {
-			BeforeEach(func() {
-				consumer = NewConsumer(&ConsumerOpts{
-					Client:                client,
-					Queue:                 queue,
-					CustodianPollInterval: 100 * time.Millisecond,
+				liveInflight, stopPollingLiveInflight := inflightJobsPoller(liveConsumer)
+				defer close(stopPollingLiveInflight)
+
+				deadInflight, stopPollingDeadInflight := inflightJobsPoller(deadConsumer)
+				defer close(stopPollingDeadInflight)
+
+				succeeded, processed := processedJobsPoller()
+				defer close(processed)
+
+				Eventually(liveInflight).Should(Receive(ConsistOf(extractIds(inflightJobs))))
+				Eventually(deadInflight).Should(Receive(ConsistOf(extractIds(orphanedJobs))))
+
+				cancel, _ := start(func(ctx context.Context, job Job) error {
+					processed <- job.ID
+					return nil
 				})
+				defer cancel()
 
-				consumer.processes.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							processErrors <- fmt.Errorf("%v", r)
-						}
-					}()
-
-					consumer.runCustodian(ctx)
-					processErrors <- nil
-				}()
-			})
-
-			It("Shuts down cleanly when the context is canceled", func() {
-				cancel()
-			})
-
-			Context("When there are jobs to be cleaned up", func() {
-				var consumers []*Consumer
-
-				createConsumers := func(count int) []*Consumer {
-					results := make([]*Consumer, count)
-					for i := 0; i < count; i++ {
-						results[i] = NewConsumer(&ConsumerOpts{
-							Client: client,
-							Queue:  queue,
-						})
-					}
-					return results
-				}
-
-				registerConsumer := func(consumer *Consumer, lastSeenAt time.Time) {
-					err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
-						Score:  float64(lastSeenAt.Unix()),
-						Member: consumer.inflightSet,
-					}).Err()
-					Expect(err).NotTo(HaveOccurred())
-				}
-
-				reserveJob := func(consumer *Consumer, jobID string) {
-					err := client.SAdd(consumer.inflightSet, jobID).Err()
-					Expect(err).NotTo(HaveOccurred())
-				}
-
-				BeforeEach(func() {
-					consumers = createConsumers(5)
-					for idx, consumer := range consumers {
-						jobID := fmt.Sprintf("job_id-%d", idx)
-						reserveJob(consumer, jobID)
-
-						lastSeenAt := time.Now()
-						if idx < 2 {
-							lastSeenAt = lastSeenAt.Add(-consumer.opts.HeartbeatInterval).Add(-consumer.opts.CustodianConsumerTimeout)
-						}
-						registerConsumer(consumer, lastSeenAt)
-					}
-				})
-
-				It("Enqueues them", func() {
-					jobIDs, stopPolling := poller(100*time.Millisecond, func() []interface{} {
-						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-
-						results := make([]interface{}, len(activeJobs))
-						for idx, job := range activeJobs {
-							results[idx] = job
-						}
-
-						return results
-					})
-
-					// Test that we get only the initial jobs that are schedulable.
-					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
-						"job_id-0",
-						"job_id-1",
-					})))
-
-					// Test that we get another job when another consumer expires.
-					lastSeenAt := time.Now().Add(-consumer.opts.HeartbeatInterval).Add(-consumer.opts.CustodianConsumerTimeout)
-					registerConsumer(consumers[2], lastSeenAt)
-					Eventually(jobIDs).Should(Receive(ConsistOf([]string{
-						"job_id-0",
-						"job_id-1",
-						"job_id-2",
-					})))
-
-					// Clean up
-					close(stopPolling)
-				})
+				Eventually(deadInflight).Should(Receive(ConsistOf([]string{})))
+				Eventually(liveInflight).Should(Receive(ConsistOf(extractIds(inflightJobs))))
+				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(orphanedJobs))))
 			})
 		})
 	})
@@ -1144,6 +804,7 @@ var _ = Describe("Consumer", func() {
 			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
 				Queue:  queue,
+				Logger: &EmptyLogger{},
 			})
 		})
 
@@ -1947,56 +1608,6 @@ var _ = Describe("Consumer", func() {
 					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(scheduledJobs).To(BeEmpty())
-				})
-			})
-		})
-	})
-
-	Describe("Helpers", func() {
-		var consumer *Consumer
-		var job *Job
-		var ctx context.Context
-
-		BeforeEach(func() {
-			ctx = context.Background()
-			job = &Job{
-				ID:   "TestID",
-				Data: []byte("TestData"),
-			}
-			consumer = NewConsumer(&ConsumerOpts{
-				Client: client,
-				Queue:  queue,
-			})
-		})
-
-		Describe("executeJob", func() {
-			It("Executes the job using the provided handler function", func() {
-				err := consumer.executeJob(ctx, job, func(ctx context.Context, received Job) error {
-					Expect(received).To(Equal(*job))
-					return nil
-				})
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("When the handler returns an error", func() {
-				It("Bubbles up the error", func() {
-					err := consumer.executeJob(ctx, job, func(ctx context.Context, received Job) error {
-						Expect(received).To(Equal(*job))
-						return fmt.Errorf("I broke!")
-					})
-					Expect(err).To(HaveOccurred())
-					Expect(err.Error()).To(Equal("I broke!"))
-				})
-			})
-
-			Context("When the handler panics", func() {
-				It("Recovers and bubbles up an error", func() {
-					err := consumer.executeJob(ctx, job, func(ctx context.Context, received Job) error {
-						Expect(received).To(Equal(*job))
-						panic("I broke!")
-					})
-					Expect(err).To(HaveOccurred())
-					Expect(err.Error()).To(Equal(fmt.Sprintf("Job %s panicked during execution: I broke!", job.ID)))
 				})
 			})
 		})
