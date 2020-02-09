@@ -125,36 +125,13 @@ var _ = Describe("Consumer", func() {
 			Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
 			Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
 			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
-			Expect(consumer.opts.ExecutorsConcurrency).To(Equal(10))
-			Expect(consumer.opts.ExecutorsPollInterval).To(Equal(3 * time.Second))
-			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
-			Expect(consumer.opts.ExecutorsMaxAttempts).To(Equal(5))
 			Expect(consumer.opts.HeartbeatInterval).To(Equal(1 * time.Minute))
-			Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
-			Expect(consumer.opts.SchedulerPollInterval).To(Equal(15 * time.Second))
+			Expect(consumer.opts.PollerBufferSize).To(Equal(10))
+			Expect(consumer.opts.PollerPollDuration).To(Equal(5 * time.Second))
+			Expect(consumer.opts.ProcessorConcurrency).To(Equal(5))
+			Expect(consumer.opts.ProcessorMaxAttempts).To(Equal(5))
 			Expect(consumer.opts.SchedulerMaxJobs).To(Equal(50))
-		})
-
-		It("Applies defaults based on other options", func() {
-			consumer := NewConsumer(&ConsumerOpts{
-				Client:               client,
-				Queue:                queue,
-				ExecutorsConcurrency: 25,
-			})
-
-			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(25))
-		})
-
-		It("Does not override with defaults based on other options when specified", func() {
-			consumer := NewConsumer(&ConsumerOpts{
-				Client:               client,
-				Queue:                queue,
-				ExecutorsConcurrency: 25,
-				ExecutorsBufferSize:  10,
-			})
-
-			Expect(consumer.opts.ExecutorsConcurrency).To(Equal(25))
-			Expect(consumer.opts.ExecutorsBufferSize).To(Equal(10))
+			Expect(consumer.opts.SchedulerPollInterval).To(Equal(5 * time.Second))
 		})
 
 		It("Applies the minimum values to relevant options", func() {
@@ -163,10 +140,12 @@ var _ = Describe("Consumer", func() {
 				Queue:                    queue,
 				CustodianConsumerTimeout: 1 * time.Second,
 				HeartbeatInterval:        1 * time.Second,
+				PollerPollDuration:       500 * time.Millisecond,
 			})
 
 			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(5 * time.Second))
 			Expect(consumer.opts.HeartbeatInterval).To(Equal(15 * time.Second))
+			Expect(consumer.opts.PollerPollDuration).To(Equal(1 * time.Second))
 		})
 	})
 
@@ -390,14 +369,14 @@ var _ = Describe("Consumer", func() {
 
 		BeforeEach(func() {
 			consumer = NewConsumer(&ConsumerOpts{
-				Client:                client,
-				Queue:                 queue,
-				Logger:                &EmptyLogger{},
-				ShutdownGracePeriod:   2 * time.Second,
-				ExecutorsConcurrency:  2,
-				ExecutorsBufferSize:   4,
-				ExecutorsPollInterval: 1 * time.Second,
-				ExecutorsMaxAttempts:  10,
+				Client:               client,
+				Queue:                queue,
+				Logger:               &EmptyLogger{},
+				ShutdownGracePeriod:  2 * time.Second,
+				ProcessorConcurrency: 2,
+				PollerBufferSize:     4,
+				PollerPollDuration:   1 * time.Second,
+				ProcessorMaxAttempts: 10,
 			})
 		})
 
@@ -519,8 +498,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that return an error with less than ExecutorsMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts-1)
+			It("Reschedules jobs that return an error with less than ProcessorMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -538,8 +517,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that panic with less than ExecutorsMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts-1)
+			It("Reschedules jobs that panic with less than ProcessorMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -557,8 +536,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kill jobs that return an error after ExecutorsMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts)
+			It("Kill jobs that return an error after ProcessorMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -576,8 +555,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(dead).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kills jobs that panic after ExecutorsMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ExecutorsMaxAttempts)
+			It("Kills jobs that panic after ProcessorMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -599,7 +578,7 @@ var _ = Describe("Consumer", func() {
 				running := make(chan struct{})
 				block := make(chan struct{})
 
-				jobs := createJobs(10, consumer.opts.ExecutorsMaxAttempts)
+				jobs := createJobs(10, consumer.opts.ProcessorMaxAttempts)
 				ids := extractIds(jobs)
 				enqueueJobs(jobs)
 
@@ -616,7 +595,7 @@ var _ = Describe("Consumer", func() {
 					return nil
 				})
 
-				for i := 0; i < consumer.opts.ExecutorsConcurrency; i++ {
+				for i := 0; i < consumer.opts.ProcessorConcurrency; i++ {
 					<-running
 				}
 
@@ -685,7 +664,7 @@ var _ = Describe("Consumer", func() {
 
 			It("Aborts if it cannot kill a job", func() {
 				block := make(chan struct{})
-				jobs := createJobs(1, consumer.opts.ExecutorsMaxAttempts)
+				jobs := createJobs(1, consumer.opts.ProcessorMaxAttempts)
 				enqueueJobs(jobs)
 
 				cancel, errors := start(func(ctx context.Context, job Job) error {

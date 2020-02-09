@@ -58,41 +58,43 @@ type ConsumerOpts struct {
 	// Default: 0
 	ShutdownGracePeriod time.Duration
 
-	// How frequently the custodian should clean up jobs.
-	// Default: 1 minute
-	CustodianPollInterval time.Duration
-	// Max number of jobs to clean up during a single check.
-	// Default: 50
-	CustodianMaxJobs int
 	// How long to wait after a missed heartbeat before a consumer is considered dead.
 	// Default: 1 minute
 	// Minimum: 5 seconds
 	CustodianConsumerTimeout time.Duration
-
-	// How many job executors to run simultaneously.
-	// Default: 10
-	ExecutorsConcurrency int
-	// How frequently we should poll for jobs.
-	// Default: 3 seconds
-	ExecutorsPollInterval time.Duration
-	// How many jobs to buffer locally.
-	// Default: Same as ExecutorsConcurrency
-	ExecutorsBufferSize int
-	// The number of times to attempt a job before killing it.
-	// Default: 5
-	ExecutorsMaxAttempts int
+	// Max number of jobs to clean up during a single check.
+	// Default: 50
+	CustodianMaxJobs int
+	// How frequently the custodian should clean up jobs.
+	// Default: 1 minute
+	CustodianPollInterval time.Duration
 
 	// How frequently we should heartbeat.
 	// Default: 1 minute
 	// Minimum: 15 seconds
 	HeartbeatInterval time.Duration
 
-	// How frequently the scheduler should check for scheduled jobs.
-	// Default: 15 seconds
-	SchedulerPollInterval time.Duration
+	// How many jobs to buffer locally.
+	// Default: 10
+	PollerBufferSize int
+	// How long we should block on Redis for new jobs on each call.
+	// Default: 5 seconds
+	// Minimum: 1 second
+	PollerPollDuration time.Duration
+
+	// How many jobs to process simultaneously.
+	// Default: 5
+	ProcessorConcurrency int
+	// The number of times to attempt a job before killing it.
+	// Default: 5
+	ProcessorMaxAttempts int
+
 	// Max number of jobs to schedule during each check.
 	// Default: 50
 	SchedulerMaxJobs int
+	// How frequently the scheduler should check for scheduled jobs.
+	// Default: 5 seconds
+	SchedulerPollInterval time.Duration
 }
 
 // withDefaults returns a new ConsumerOpts with default values applied.
@@ -103,48 +105,50 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 		opts.Logger = &DefaultLogger{}
 	}
 
-	if opts.HeartbeatInterval <= 0 {
-		opts.HeartbeatInterval = 1 * time.Minute
-	} else if opts.HeartbeatInterval < 15*time.Second {
-		opts.HeartbeatInterval = 15 * time.Second
-	}
-
-	if opts.ExecutorsConcurrency <= 0 {
-		opts.ExecutorsConcurrency = 10
-	}
-
-	if opts.ExecutorsPollInterval <= 0 {
-		opts.ExecutorsPollInterval = 3 * time.Second
-	}
-
-	if opts.ExecutorsBufferSize <= 0 {
-		opts.ExecutorsBufferSize = opts.ExecutorsConcurrency
-	}
-
-	if opts.ExecutorsMaxAttempts <= 0 {
-		opts.ExecutorsMaxAttempts = 5
-	}
-
-	if opts.SchedulerPollInterval <= 0 {
-		opts.SchedulerPollInterval = 15 * time.Second
-	}
-
-	if opts.SchedulerMaxJobs <= 0 {
-		opts.SchedulerMaxJobs = 50
-	}
-
-	if opts.CustodianPollInterval <= 0 {
-		opts.CustodianPollInterval = 1 * time.Minute
+	if opts.CustodianConsumerTimeout <= 0 {
+		opts.CustodianConsumerTimeout = 1 * time.Minute
+	} else if opts.CustodianConsumerTimeout < 5*time.Second {
+		opts.CustodianConsumerTimeout = 5 * time.Second
 	}
 
 	if opts.CustodianMaxJobs <= 0 {
 		opts.CustodianMaxJobs = 50
 	}
 
-	if opts.CustodianConsumerTimeout <= 0 {
-		opts.CustodianConsumerTimeout = 1 * time.Minute
-	} else if opts.CustodianConsumerTimeout < 5*time.Second {
-		opts.CustodianConsumerTimeout = 5 * time.Second
+	if opts.CustodianPollInterval <= 0 {
+		opts.CustodianPollInterval = 1 * time.Minute
+	}
+
+	if opts.HeartbeatInterval <= 0 {
+		opts.HeartbeatInterval = 1 * time.Minute
+	} else if opts.HeartbeatInterval < 15*time.Second {
+		opts.HeartbeatInterval = 15 * time.Second
+	}
+
+	if opts.PollerBufferSize <= 0 {
+		opts.PollerBufferSize = 10
+	}
+
+	if opts.PollerPollDuration <= 0 {
+		opts.PollerPollDuration = 5 * time.Second
+	} else if opts.PollerPollDuration < 1*time.Second {
+		opts.PollerPollDuration = 1 * time.Second
+	}
+
+	if opts.ProcessorConcurrency <= 0 {
+		opts.ProcessorConcurrency = 5
+	}
+
+	if opts.ProcessorMaxAttempts <= 0 {
+		opts.ProcessorMaxAttempts = 5
+	}
+
+	if opts.SchedulerPollInterval <= 0 {
+		opts.SchedulerPollInterval = 5 * time.Second
+	}
+
+	if opts.SchedulerMaxJobs <= 0 {
+		opts.SchedulerMaxJobs = 50
 	}
 
 	return &opts
@@ -228,7 +232,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	c.client = c.client.WithContext(ctx)
 
 	// A buffer to store locally queued jobs.
-	buffer := make(chan *Job, c.opts.ExecutorsBufferSize)
+	buffer := make(chan *Job, c.opts.PollerBufferSize)
 	cond := sync.NewCond(&sync.Mutex{})
 	go func() {
 		<-ctx.Done()
@@ -446,13 +450,13 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 	defer c.opts.Logger.Debug("Processor: process finished")
 
 	// A token bucket to limit concurrent active executors.
-	tokens := make(chan struct{}, c.opts.ExecutorsConcurrency)
-	for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
+	tokens := make(chan struct{}, c.opts.ProcessorConcurrency)
+	for i := 0; i < c.opts.ProcessorConcurrency; i++ {
 		tokens <- struct{}{}
 	}
 
 	defer func() {
-		for i := 0; i < c.opts.ExecutorsConcurrency; i++ {
+		for i := 0; i < c.opts.ProcessorConcurrency; i++ {
 			<-tokens
 		}
 		close(tokens)
@@ -482,7 +486,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 			go func() {
 				err := c.executeJob(ctx, job, handler)
 				if err != nil {
-					if job.Attempt < c.opts.ExecutorsMaxAttempts {
+					if job.Attempt < c.opts.ProcessorMaxAttempts {
 						_, err := c.retryJob(job)
 						if err != nil {
 							c.abort(ErrFailedToRetryJob{
@@ -656,7 +660,7 @@ func (c *Consumer) pollActiveJobs() error {
 	return c.client.BRPopLPush(
 		c.queue.activeJobsList,
 		c.queue.activeJobsList,
-		c.opts.ExecutorsPollInterval,
+		c.opts.PollerPollDuration,
 	).Err()
 }
 
