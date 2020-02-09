@@ -417,17 +417,19 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 			return
 		}
 
+		c.opts.Logger.Debug("Poller: polling for new jobs...")
 		if c.pollActiveJobs() != nil {
+			c.opts.Logger.Debug("Poller: no new jobs found")
 			continue
 		}
 
-		c.opts.Logger.Debug("Poller: polling for new jobs...")
 		count := cap(buffer) - len(buffer)
+		c.opts.Logger.Debug("Poller: retrieving jobs...", "job_count", count)
 		jobs, err := c.getJobs(count)
 		if err != nil {
 			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
 		} else {
-			c.opts.Logger.Debug("Poller: successfully polled", "job_count", len(jobs))
+			c.opts.Logger.Debug("Poller: successfully retrieved jobs", "job_count", len(jobs))
 			for _, job := range jobs {
 				buffer <- job
 			}
@@ -472,7 +474,9 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 				tokens <- struct{}{}
 				return
 			}
+			cond.L.Lock()
 			cond.Broadcast()
+			cond.L.Unlock()
 
 			// Execute the job concurrently.
 			go func() {
