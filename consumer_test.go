@@ -121,6 +121,8 @@ var _ = Describe("Consumer", func() {
 			})
 
 			Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
+			Expect(consumer.opts.JobMaxAttempts).To(Equal(20))
+			Expect(consumer.opts.JobMaxBackoff).To(Equal(168 * time.Hour))
 			Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
 
 			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
@@ -139,7 +141,6 @@ var _ = Describe("Consumer", func() {
 			Expect(consumer.opts.PollerPollDuration).To(Equal(5 * time.Second))
 
 			Expect(consumer.opts.ProcessorConcurrency).To(Equal(5))
-			Expect(consumer.opts.ProcessorMaxRetries).To(Equal(5))
 
 			Expect(consumer.opts.SchedulerMaxAttempts).To(Equal(0))
 			Expect(consumer.opts.SchedulerMaxBackoff).To(Equal(30 * time.Second))
@@ -389,7 +390,7 @@ var _ = Describe("Consumer", func() {
 				ProcessorConcurrency: 2,
 				PollerBufferSize:     4,
 				PollerPollDuration:   1 * time.Second,
-				ProcessorMaxRetries:  10,
+				JobMaxAttempts:       10,
 			})
 		})
 
@@ -536,8 +537,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that return an error with less than ProcessorMaxRetries", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries-1)
+			It("Reschedules jobs that return an error with less than JobMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.JobMaxAttempts-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -555,8 +556,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that panic with less than ProcessorMaxRetries", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries-1)
+			It("Reschedules jobs that panic with less than JobMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.JobMaxAttempts-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -574,8 +575,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kill jobs that return an error after ProcessorMaxRetries", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries)
+			It("Kill jobs that return an error after JobMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.JobMaxAttempts)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -593,8 +594,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(dead).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kills jobs that panic after ProcessorMaxRetries", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries)
+			It("Kills jobs that panic after JobMaxAttempts", func() {
+				jobs := createJobs(5, consumer.opts.JobMaxAttempts)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -616,7 +617,7 @@ var _ = Describe("Consumer", func() {
 				running := make(chan struct{})
 				block := make(chan struct{})
 
-				jobs := createJobs(10, consumer.opts.ProcessorMaxRetries)
+				jobs := createJobs(10, consumer.opts.JobMaxAttempts)
 				ids := extractIds(jobs)
 				enqueueJobs(jobs)
 
@@ -702,7 +703,7 @@ var _ = Describe("Consumer", func() {
 
 			It("Aborts if it cannot kill a job", func() {
 				block := make(chan struct{})
-				jobs := createJobs(1, consumer.opts.ProcessorMaxRetries)
+				jobs := createJobs(1, consumer.opts.JobMaxAttempts)
 				enqueueJobs(jobs)
 
 				cancel, errors := start(func(ctx context.Context, job Job) error {
@@ -1714,8 +1715,8 @@ var _ = Describe("Consumer", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(1))
 					Expect(scheduledJobs[0].Member).To(Equal(job.ID))
-					Expect(scheduledJobs[0].Score).To(BeNumerically(">=", float64(time.Now().Add(60*time.Second).Unix())))
-					Expect(scheduledJobs[0].Score).To(BeNumerically("<=", float64(time.Now().Add(70*time.Second).Unix())))
+					Expect(scheduledJobs[0].Score).To(BeNumerically(">=", float64(time.Now().Add(32*time.Second).Unix())))
+					Expect(scheduledJobs[0].Score).To(BeNumerically("<=", float64(time.Now().Add(64*time.Second).Unix())))
 
 					inflightJobs, err := client.LRange(consumer.inflightSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())

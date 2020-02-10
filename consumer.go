@@ -53,6 +53,12 @@ type ConsumerOpts struct {
 	// Logger provides a concrete implementation of the Logger interface.
 	// If not provided, it will default to using the stdlib's log package.
 	Logger Logger
+	// The maximum number of times to retry a job before killing it.
+	// Default: 20
+	JobMaxAttempts int
+	// The maximum delay between retry attempts.
+	// Default: 1 week
+	JobMaxBackoff time.Duration
 	// How long to wait for executors to finish before exiting forcibly.
 	// A zero value indicates that we should wait indefinitely.
 	// Default: 0
@@ -106,9 +112,6 @@ type ConsumerOpts struct {
 	// How many jobs to process simultaneously.
 	// Default: 5
 	ProcessorConcurrency int
-	// The number of times to retry a job before killing it.
-	// Default: 5
-	ProcessorMaxRetries int
 
 	// The maximum number of failed attempts before aborting.
 	// A zero value indiciates the scheduler should never abort.
@@ -131,6 +134,14 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 
 	if opts.Logger == nil {
 		opts.Logger = &DefaultLogger{}
+	}
+
+	if opts.JobMaxAttempts <= 0 {
+		opts.JobMaxAttempts = 20
+	}
+
+	if opts.JobMaxBackoff <= 0 {
+		opts.JobMaxBackoff = 168 * time.Hour
 	}
 
 	if opts.CustodianConsumerTimeout <= 0 {
@@ -177,10 +188,6 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 
 	if opts.ProcessorConcurrency <= 0 {
 		opts.ProcessorConcurrency = 5
-	}
-
-	if opts.ProcessorMaxRetries <= 0 {
-		opts.ProcessorMaxRetries = 5
 	}
 
 	if opts.SchedulerPollInterval <= 0 {
@@ -565,7 +572,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, bufferFre
 				err := c.executeJob(ctx, job, handler)
 				if err != nil {
 					c.opts.Logger.Debug("Job failed", "id", job.ID)
-					if job.Attempt < c.opts.ProcessorMaxRetries {
+					if job.Attempt < c.opts.JobMaxAttempts {
 						c.opts.Logger.Debug("Retrying job", "id", job.ID, "retries", job.Attempt)
 						_, err := c.retryJob(job)
 						if err != nil {
@@ -799,9 +806,8 @@ func (c *Consumer) registerConsumer() error {
 // retryJob reschedules a job that errored during execution.
 // It returns an error if the Redis script fails or it cannot marshal the job.
 func (c *Consumer) retryJob(job *Job) (bool, error) {
-	jitter := rand.Float64()
-	backoff := math.Pow(2, float64(job.Attempt)) + jitter
-	retryAt := float64(time.Now().Add(time.Duration(backoff) * time.Second).Unix())
+	backoff := expBackoff(job.Attempt, c.opts.JobMaxBackoff)
+	retryAt := float64(time.Now().Add(time.Duration(backoff)).Unix())
 	job.Attempt = job.Attempt + 1
 	msg, err := job.message()
 	if err != nil {
