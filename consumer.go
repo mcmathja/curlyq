@@ -47,12 +47,12 @@ type ConsumerOpts struct {
 	// Client is a custom go-redis instance used to communicate with Redis.
 	// If provided, this option overrides the value set in Address.
 	Client *redis.Client
-	// Logger provides a concrete implementation of the Logger interface.
-	// If not provided, it will default to using the stdlib's log package.
-	Logger Logger
 	// Queue specifies the name of the queue that this consumer will consume from.
 	Queue string
 
+	// Logger provides a concrete implementation of the Logger interface.
+	// If not provided, it will default to using the stdlib's log package.
+	Logger Logger
 	// How long to wait for executors to finish before exiting forcibly.
 	// A zero value indicates that we should wait indefinitely.
 	// Default: 0
@@ -62,6 +62,13 @@ type ConsumerOpts struct {
 	// Default: 1 minute
 	// Minimum: 5 seconds
 	CustodianConsumerTimeout time.Duration
+	// The maximum number of failed attempts before aborting.
+	// A zero value indiciates the custodian should never abort.
+	// Default: 0
+	CustodianMaxAttempts int
+	// The longest amount of time to wait between failed attempts.
+	// Default: 30 seconds
+	CustodianMaxBackoff time.Duration
 	// Max number of jobs to clean up during a single check.
 	// Default: 50
 	CustodianMaxJobs int
@@ -69,14 +76,28 @@ type ConsumerOpts struct {
 	// Default: 1 minute
 	CustodianPollInterval time.Duration
 
+	// The maximum number of failed attempts before aborting.
+	// A zero value indiciates the hearbeart should never abort.
+	// Default: 0
+	HeartbeatMaxAttempts int
+	// The longest amount of time to wait between failed attempts.
+	// Default: 30 seconds
+	HeartbeatMaxBackoff time.Duration
 	// How frequently we should heartbeat.
 	// Default: 1 minute
 	// Minimum: 15 seconds
-	HeartbeatInterval time.Duration
+	HeartbeatPollInterval time.Duration
 
 	// How many jobs to buffer locally.
 	// Default: 10
 	PollerBufferSize int
+	// The maximum number of failed attempts before aborting.
+	// A zero value indiciates the poller should never abort.
+	// Default: 0
+	PollerMaxAttempts int
+	// The longest amount of time to wait between failed attempts.
+	// Default: 30 seconds
+	PollerMaxBackoff time.Duration
 	// How long we should block on Redis for new jobs on each call.
 	// Default: 5 seconds
 	// Minimum: 1 second
@@ -85,10 +106,17 @@ type ConsumerOpts struct {
 	// How many jobs to process simultaneously.
 	// Default: 5
 	ProcessorConcurrency int
-	// The number of times to attempt a job before killing it.
+	// The number of times to retry a job before killing it.
 	// Default: 5
-	ProcessorMaxAttempts int
+	ProcessorMaxRetries int
 
+	// The maximum number of failed attempts before aborting.
+	// A zero value indiciates the scheduler should never abort.
+	// Default: 0
+	SchedulerMaxAttempts int
+	// The longest amount of time to wait between failed attempts.
+	// Default: 30 seconds
+	SchedulerMaxBackoff time.Duration
 	// Max number of jobs to schedule during each check.
 	// Default: 50
 	SchedulerMaxJobs int
@@ -111,6 +139,10 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 		opts.CustodianConsumerTimeout = 5 * time.Second
 	}
 
+	if opts.CustodianMaxBackoff <= 0 {
+		opts.CustodianMaxBackoff = 30 * time.Second
+	}
+
 	if opts.CustodianMaxJobs <= 0 {
 		opts.CustodianMaxJobs = 50
 	}
@@ -119,14 +151,22 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 		opts.CustodianPollInterval = 1 * time.Minute
 	}
 
-	if opts.HeartbeatInterval <= 0 {
-		opts.HeartbeatInterval = 1 * time.Minute
-	} else if opts.HeartbeatInterval < 15*time.Second {
-		opts.HeartbeatInterval = 15 * time.Second
+	if opts.HeartbeatMaxBackoff <= 0 {
+		opts.HeartbeatMaxBackoff = 30 * time.Second
+	}
+
+	if opts.HeartbeatPollInterval <= 0 {
+		opts.HeartbeatPollInterval = 1 * time.Minute
+	} else if opts.HeartbeatPollInterval < 15*time.Second {
+		opts.HeartbeatPollInterval = 15 * time.Second
 	}
 
 	if opts.PollerBufferSize <= 0 {
 		opts.PollerBufferSize = 10
+	}
+
+	if opts.PollerMaxBackoff <= 0 {
+		opts.PollerMaxBackoff = 30 * time.Second
 	}
 
 	if opts.PollerPollDuration <= 0 {
@@ -139,12 +179,16 @@ func (o *ConsumerOpts) withDefaults() *ConsumerOpts {
 		opts.ProcessorConcurrency = 5
 	}
 
-	if opts.ProcessorMaxAttempts <= 0 {
-		opts.ProcessorMaxAttempts = 5
+	if opts.ProcessorMaxRetries <= 0 {
+		opts.ProcessorMaxRetries = 5
 	}
 
 	if opts.SchedulerPollInterval <= 0 {
 		opts.SchedulerPollInterval = 5 * time.Second
+	}
+
+	if opts.SchedulerMaxBackoff <= 0 {
+		opts.SchedulerMaxBackoff = 30 * time.Second
 	}
 
 	if opts.SchedulerMaxJobs <= 0 {
@@ -331,23 +375,24 @@ func (c *Consumer) runCustodian(ctx context.Context) {
 	ticker := time.NewTicker(c.opts.CustodianPollInterval)
 	defer ticker.Stop()
 
+	attempts := 0
 	for {
 		c.opts.Logger.Debug("Custodian: re-enqueueing orphaned jobs...")
 
-		hasMoreWork := false
+		if ctx.Err() != nil {
+			return
+		}
+
 		count, err := c.reenqueueOrphanedJobs()
 		if err != nil {
 			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
+			attempts++
+			c.backoff(ctx, "Custodian", attempts, c.opts.CustodianMaxBackoff, c.opts.CustodianMaxAttempts)
+			continue
 		} else {
 			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
-			hasMoreWork = count == c.opts.CustodianMaxJobs
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if hasMoreWork {
+			attempts = 0
+			if count == c.opts.CustodianMaxJobs {
 				continue
 			}
 		}
@@ -369,16 +414,25 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 	c.opts.Logger.Debug("Heartbeat: process starting")
 	defer c.opts.Logger.Debug("Heartbeat: process finished")
 
-	ticker := time.NewTicker(c.opts.HeartbeatInterval)
+	ticker := time.NewTicker(c.opts.HeartbeatPollInterval)
 	defer ticker.Stop()
 
+	attempts := 0
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		c.opts.Logger.Debug("Heartbeat: updating consumer...")
 		err := c.registerConsumer()
 		if err != nil {
 			c.opts.Logger.Error("Heartbeat: failed to update", "error", err)
+			attempts++
+			c.backoff(ctx, "Heartbeat", attempts, c.opts.HeartbeatMaxBackoff, c.opts.HeartbeatMaxAttempts)
+			continue
 		} else {
 			c.opts.Logger.Debug("Heartbeat: update successful")
+			attempts = 0
 		}
 
 		select {
@@ -410,6 +464,7 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		}
 	}()
 
+	attempts := 0
 	for {
 		cond.L.Lock()
 		for len(buffer) >= cap(buffer) && ctx.Err() == nil {
@@ -422,8 +477,15 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		}
 
 		c.opts.Logger.Debug("Poller: polling for new jobs...")
-		if c.pollActiveJobs() != nil {
+		err := c.pollActiveJobs()
+		if err == redis.Nil {
 			c.opts.Logger.Debug("Poller: no new jobs found")
+			attempts = 0
+			continue
+		} else if err != nil {
+			c.opts.Logger.Debug("Poller: error polling jobs")
+			attempts++
+			c.backoff(ctx, "Poller", attempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 			continue
 		}
 
@@ -432,6 +494,8 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		jobs, err := c.getJobs(count)
 		if err != nil {
 			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
+			attempts++
+			c.backoff(ctx, "Poller", attempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 		} else {
 			c.opts.Logger.Debug("Poller: successfully retrieved jobs", "job_count", len(jobs))
 			for _, job := range jobs {
@@ -486,7 +550,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 			go func() {
 				err := c.executeJob(ctx, job, handler)
 				if err != nil {
-					if job.Attempt < c.opts.ProcessorMaxAttempts {
+					if job.Attempt < c.opts.ProcessorMaxRetries {
 						_, err := c.retryJob(job)
 						if err != nil {
 							c.abort(ErrFailedToRetryJob{
@@ -529,23 +593,24 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 	ticker := time.NewTicker(c.opts.SchedulerPollInterval)
 	defer ticker.Stop()
 
+	attempts := 0
 	for {
 		c.opts.Logger.Debug("Scheduler: enqueueing jobs...")
 
-		hasMoreWork := false
+		if ctx.Err() != nil {
+			return
+		}
+
 		count, err := c.enqueueScheduledJobs()
 		if err != nil {
 			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
+			attempts++
+			c.backoff(ctx, "Scheduler", attempts, c.opts.SchedulerMaxBackoff, c.opts.SchedulerMaxAttempts)
+			continue
 		} else {
 			c.opts.Logger.Debug("Scheduler: jobs enqueued successfully", "job_count", count)
-			hasMoreWork = count == c.opts.SchedulerMaxJobs
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if hasMoreWork {
+			attempts = 0
+			if count == c.opts.SchedulerMaxJobs {
 				continue
 			}
 		}
@@ -689,7 +754,7 @@ func (c *Consumer) reenqueueOrphanedJobs() (int, error) {
 		c.queue.activeJobsList,
 	}
 
-	expiredBefore := time.Now().Add(-c.opts.HeartbeatInterval).Add(-c.opts.CustodianConsumerTimeout)
+	expiredBefore := time.Now().Add(-c.opts.HeartbeatPollInterval).Add(-c.opts.CustodianConsumerTimeout)
 	args := []interface{}{
 		float64(expiredBefore.Unix()),
 		c.opts.CustodianMaxJobs,
@@ -760,4 +825,33 @@ func (c *Consumer) abort(err error) {
 	c.onAbort.Do(func() {
 		c.errors <- err
 	})
+}
+
+// backoff is used to delay a processing loop that has encountered an error.
+// It calculates a backoff and sleeps for that amount of time.
+func (c *Consumer) backoff(ctx context.Context, process string, attempt int, maxDelay time.Duration, maxAttempts int) {
+	if maxAttempts > 0 && attempt >= maxAttempts {
+		c.abort(ErrExceededMaxBackoff{
+			Attempt: attempt,
+			Process: process,
+		})
+	}
+
+	delay := expBackoff(attempt, maxDelay)
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+
+	return
+}
+
+// expBackoff implements a simple exponential backoff function.
+func expBackoff(attempt int, max time.Duration) time.Duration {
+	base := math.Pow(2, float64(attempt))
+	jittered := (1 + rand.Float64()) * (base / 2)
+	scaled := jittered * float64(time.Second)
+	capped := math.Min(scaled, float64(max))
+	return time.Duration(capped)
 }

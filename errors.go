@@ -36,3 +36,14 @@ type ErrFailedToAckJob struct {
 func (e ErrFailedToAckJob) Error() string {
 	return fmt.Sprintf("Failed to acknowledge job %s: %s", e.Job.ID, e.Err.Error())
 }
+
+// ErrExceededMaxBackoff indicates a polling loop exceeded a maximum number of backoffs.
+// It is considered a fatal error that should shut down the consumer.
+type ErrExceededMaxBackoff struct {
+	Attempt int
+	Process string
+}
+
+func (e ErrExceededMaxBackoff) Error() string {
+	return fmt.Sprintf("Process %s exceeded maximum %d backoff attempts", e.Process, e.Attempt)
+}

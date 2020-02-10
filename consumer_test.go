@@ -122,14 +122,27 @@ var _ = Describe("Consumer", func() {
 
 			Expect(consumer.opts.Logger).To(Equal(&DefaultLogger{}))
 			Expect(consumer.opts.ShutdownGracePeriod).To(Equal(time.Duration(0)))
-			Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
-			Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
+
 			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(1 * time.Minute))
-			Expect(consumer.opts.HeartbeatInterval).To(Equal(1 * time.Minute))
+			Expect(consumer.opts.CustodianMaxAttempts).To(Equal(0))
+			Expect(consumer.opts.CustodianMaxBackoff).To(Equal(30 * time.Second))
+			Expect(consumer.opts.CustodianMaxJobs).To(Equal(50))
+			Expect(consumer.opts.CustodianPollInterval).To(Equal(1 * time.Minute))
+
+			Expect(consumer.opts.HeartbeatMaxAttempts).To(Equal(0))
+			Expect(consumer.opts.HeartbeatMaxBackoff).To(Equal(30 * time.Second))
+			Expect(consumer.opts.HeartbeatPollInterval).To(Equal(1 * time.Minute))
+
 			Expect(consumer.opts.PollerBufferSize).To(Equal(10))
+			Expect(consumer.opts.PollerMaxAttempts).To(Equal(0))
+			Expect(consumer.opts.PollerMaxBackoff).To(Equal(30 * time.Second))
 			Expect(consumer.opts.PollerPollDuration).To(Equal(5 * time.Second))
+
 			Expect(consumer.opts.ProcessorConcurrency).To(Equal(5))
-			Expect(consumer.opts.ProcessorMaxAttempts).To(Equal(5))
+			Expect(consumer.opts.ProcessorMaxRetries).To(Equal(5))
+
+			Expect(consumer.opts.SchedulerMaxAttempts).To(Equal(0))
+			Expect(consumer.opts.SchedulerMaxBackoff).To(Equal(30 * time.Second))
 			Expect(consumer.opts.SchedulerMaxJobs).To(Equal(50))
 			Expect(consumer.opts.SchedulerPollInterval).To(Equal(5 * time.Second))
 		})
@@ -139,12 +152,12 @@ var _ = Describe("Consumer", func() {
 				Client:                   client,
 				Queue:                    queue,
 				CustodianConsumerTimeout: 1 * time.Second,
-				HeartbeatInterval:        1 * time.Second,
+				HeartbeatPollInterval:    1 * time.Second,
 				PollerPollDuration:       500 * time.Millisecond,
 			})
 
 			Expect(consumer.opts.CustodianConsumerTimeout).To(Equal(5 * time.Second))
-			Expect(consumer.opts.HeartbeatInterval).To(Equal(15 * time.Second))
+			Expect(consumer.opts.HeartbeatPollInterval).To(Equal(15 * time.Second))
 			Expect(consumer.opts.PollerPollDuration).To(Equal(1 * time.Second))
 		})
 	})
@@ -376,7 +389,7 @@ var _ = Describe("Consumer", func() {
 				ProcessorConcurrency: 2,
 				PollerBufferSize:     4,
 				PollerPollDuration:   1 * time.Second,
-				ProcessorMaxAttempts: 10,
+				ProcessorMaxRetries:  10,
 			})
 		})
 
@@ -498,8 +511,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that return an error with less than ProcessorMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts-1)
+			It("Reschedules jobs that return an error with less than ProcessorMaxRetries", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -517,8 +530,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Reschedules jobs that panic with less than ProcessorMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts-1)
+			It("Reschedules jobs that panic with less than ProcessorMaxRetries", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries-1)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -536,8 +549,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(scheduled).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kill jobs that return an error after ProcessorMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts)
+			It("Kill jobs that return an error after ProcessorMaxRetries", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -555,8 +568,8 @@ var _ = Describe("Consumer", func() {
 				Eventually(dead).Should(Receive(ConsistOf(extractIds(jobs))))
 			})
 
-			It("Kills jobs that panic after ProcessorMaxAttempts", func() {
-				jobs := createJobs(5, consumer.opts.ProcessorMaxAttempts)
+			It("Kills jobs that panic after ProcessorMaxRetries", func() {
+				jobs := createJobs(5, consumer.opts.ProcessorMaxRetries)
 				enqueueJobs(jobs)
 
 				active, stopPollingActive := activeJobsPoller()
@@ -578,7 +591,7 @@ var _ = Describe("Consumer", func() {
 				running := make(chan struct{})
 				block := make(chan struct{})
 
-				jobs := createJobs(10, consumer.opts.ProcessorMaxAttempts)
+				jobs := createJobs(10, consumer.opts.ProcessorMaxRetries)
 				ids := extractIds(jobs)
 				enqueueJobs(jobs)
 
@@ -664,7 +677,7 @@ var _ = Describe("Consumer", func() {
 
 			It("Aborts if it cannot kill a job", func() {
 				block := make(chan struct{})
-				jobs := createJobs(1, consumer.opts.ProcessorMaxAttempts)
+				jobs := createJobs(1, consumer.opts.ProcessorMaxRetries)
 				enqueueJobs(jobs)
 
 				cancel, errors := start(func(ctx context.Context, job Job) error {
@@ -692,7 +705,7 @@ var _ = Describe("Consumer", func() {
 				consumers, stopPollingConsumers := consumersPoller()
 				defer close(stopPollingConsumers)
 
-				consumer.opts.HeartbeatInterval = 100 * time.Millisecond
+				consumer.opts.HeartbeatPollInterval = 100 * time.Millisecond
 				cancel, _ := start(func(ctx context.Context, job Job) error {
 					return nil
 				})
@@ -738,7 +751,7 @@ var _ = Describe("Consumer", func() {
 					Client: client,
 					Queue:  queue,
 				})
-				timeoutInterval := consumer.opts.HeartbeatInterval + consumer.opts.CustodianConsumerTimeout
+				timeoutInterval := consumer.opts.HeartbeatPollInterval + consumer.opts.CustodianConsumerTimeout
 				registerConsumer(deadConsumer, time.Now().Add(-timeoutInterval))
 				assignJobs(orphanedJobs, deadConsumer)
 
@@ -770,6 +783,101 @@ var _ = Describe("Consumer", func() {
 				Eventually(deadInflight).Should(Receive(ConsistOf([]string{})))
 				Eventually(liveInflight).Should(Receive(ConsistOf(extractIds(inflightJobs))))
 				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(orphanedJobs))))
+			})
+
+			It("Aborts if the poller process can't access Redis after PollerMaxAttempts", func() {
+				consumer.opts.PollerMaxAttempts = 2
+				consumer.opts.PollerMaxBackoff = 100 * time.Millisecond
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
+				consumers, stopPollingConsumers := consumersPoller()
+				defer close(stopPollingConsumers)
+
+				Eventually(consumers).Should(Receive(HaveLen(1)))
+				go server.Close()
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrExceededMaxBackoff{}),
+					MatchAllFields(Fields{
+						"Attempt": Equal(consumer.opts.PollerMaxAttempts),
+						"Process": Equal("Poller"),
+					}),
+				)))
+			})
+
+			It("Aborts if the scheduler process can't access Redis after SchedulerMaxAttempts", func() {
+				consumer.opts.SchedulerMaxAttempts = 2
+				consumer.opts.SchedulerMaxBackoff = 100 * time.Millisecond
+				consumer.opts.SchedulerPollInterval = 100 * time.Millisecond
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
+				consumers, stopPollingConsumers := consumersPoller()
+				Eventually(consumers).Should(Receive(HaveLen(1)))
+				close(stopPollingConsumers)
+
+				go server.Close()
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrExceededMaxBackoff{}),
+					MatchAllFields(Fields{
+						"Attempt": Equal(consumer.opts.SchedulerMaxAttempts),
+						"Process": Equal("Scheduler"),
+					}),
+				)))
+			})
+
+			It("Aborts if the custodian process can't access Redis after CustodianMaxAttempts", func() {
+				consumer.opts.CustodianMaxAttempts = 2
+				consumer.opts.CustodianMaxBackoff = 100 * time.Millisecond
+				consumer.opts.CustodianPollInterval = 100 * time.Millisecond
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
+				consumers, stopPollingConsumers := consumersPoller()
+				Eventually(consumers).Should(Receive(HaveLen(1)))
+				close(stopPollingConsumers)
+
+				go server.Close()
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrExceededMaxBackoff{}),
+					MatchAllFields(Fields{
+						"Attempt": Equal(consumer.opts.CustodianMaxAttempts),
+						"Process": Equal("Custodian"),
+					}),
+				)))
+			})
+
+			It("Aborts if the heartbeat process can't access Redis after HeartbeatMaxAttempts", func() {
+				consumer.opts.HeartbeatMaxAttempts = 2
+				consumer.opts.HeartbeatMaxBackoff = 100 * time.Millisecond
+				consumer.opts.HeartbeatPollInterval = 100 * time.Millisecond
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
+				consumers, stopPollingConsumers := consumersPoller()
+				Eventually(consumers).Should(Receive(HaveLen(1)))
+				close(stopPollingConsumers)
+
+				go server.Close()
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrExceededMaxBackoff{}),
+					MatchAllFields(Fields{
+						"Attempt": Equal(consumer.opts.HeartbeatMaxAttempts),
+						"Process": Equal("Heartbeat"),
+					}),
+				)))
 			})
 		})
 	})
@@ -1278,7 +1386,7 @@ var _ = Describe("Consumer", func() {
 							score = time.Now()
 						} else {
 							// The second two are expired.
-							score = time.Now().Add(-consumer.opts.CustodianConsumerTimeout).Add(-consumer.opts.HeartbeatInterval).Add(time.Duration(-i) * time.Minute)
+							score = time.Now().Add(-consumer.opts.CustodianConsumerTimeout).Add(-consumer.opts.HeartbeatPollInterval).Add(time.Duration(-i) * time.Minute)
 						}
 
 						err := client.ZAdd(consumer.queue.consumersSet, redis.Z{

@@ -48,4 +48,16 @@ var _ = Describe("Errors", func() {
 			Expect(err.Error()).To(Equal(expectedMsg))
 		})
 	})
+
+	Describe("ErrExceededMaxBackoff", func() {
+		It("Wraps an error and a job", func() {
+			err := ErrExceededMaxBackoff{
+				Attempt: 2,
+				Process: "Tester",
+			}
+
+			expectedMsg := "Process Tester exceeded maximum 2 backoff attempts"
+			Expect(err.Error()).To(Equal(expectedMsg))
+		})
+	})
 })
