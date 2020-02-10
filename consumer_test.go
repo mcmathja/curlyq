@@ -491,6 +491,31 @@ var _ = Describe("Consumer", func() {
 				close(block)
 			})
 
+			It("Waits indefinitely for jobs to finish if ShutdownGracePeriod is zero", func() {
+				block := make(chan struct{})
+
+				consumer.opts.ShutdownGracePeriod = 0
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					<-block
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				cancel()
+				Consistently(errors, 3*time.Second).ShouldNot(Receive())
+				close(block)
+			})
+
+			It("Immediately returns an error if Redis is unavailable when starting up", func() {
+				go server.Close()
+				_, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				Eventually(errors).Should(Receive(HaveOccurred()))
+			})
+
 			It("Processes jobs off the queue", func() {
 				jobs := createJobs(5, 0)
 				enqueueJobs(jobs)
@@ -722,6 +747,8 @@ var _ = Describe("Consumer", func() {
 			})
 
 			It("Enqueues scheduled jobs that are due to be run", func() {
+				consumer.opts.SchedulerMaxJobs = 3
+
 				dueJobs := createJobs(5, 0)
 				laterJobs := createJobs(5, 0)
 				scheduleJobs(dueJobs, time.Now())
@@ -744,6 +771,8 @@ var _ = Describe("Consumer", func() {
 			})
 
 			It("Cleans up jobs orphaned by dead consumers", func() {
+				consumer.opts.CustodianMaxJobs = 3
+
 				inflightJobs := createJobs(5, 0)
 				orphanedJobs := createJobs(5, 0)
 
@@ -785,7 +814,7 @@ var _ = Describe("Consumer", func() {
 				Eventually(succeeded).Should(Receive(ConsistOf(extractIds(orphanedJobs))))
 			})
 
-			It("Aborts if the poller process can't access Redis after PollerMaxAttempts", func() {
+			It("Aborts if the poller process can't poll Redis after PollerMaxAttempts", func() {
 				consumer.opts.PollerMaxAttempts = 2
 				consumer.opts.PollerMaxBackoff = 100 * time.Millisecond
 
@@ -808,7 +837,34 @@ var _ = Describe("Consumer", func() {
 				)))
 			})
 
-			It("Aborts if the scheduler process can't access Redis after SchedulerMaxAttempts", func() {
+			It("Aborts if the poller process can't retrieve jobs from Redis after PollerMaxAttempts", func() {
+				consumer.opts.PollerMaxAttempts = 2
+				consumer.opts.PollerMaxBackoff = 100 * time.Millisecond
+
+				// Force an error in the getJobs script by setting an incorrect datatype
+				enqueueJobs(createJobs(1, 0))
+				err := client.HSet(consumer.inflightSet, "key", "value").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					return nil
+				})
+				defer cancel()
+
+				consumers, stopPollingConsumers := consumersPoller()
+				defer close(stopPollingConsumers)
+
+				Eventually(consumers).Should(Receive(HaveLen(1)))
+				Eventually(errors).Should(Receive(And(
+					BeAssignableToTypeOf(ErrExceededMaxBackoff{}),
+					MatchAllFields(Fields{
+						"Attempt": Equal(consumer.opts.PollerMaxAttempts),
+						"Process": Equal("Poller"),
+					}),
+				)))
+			})
+
+			It("Aborts if the scheduler process can't poll Redis after SchedulerMaxAttempts", func() {
 				consumer.opts.SchedulerMaxAttempts = 2
 				consumer.opts.SchedulerMaxBackoff = 100 * time.Millisecond
 				consumer.opts.SchedulerPollInterval = 100 * time.Millisecond
@@ -832,7 +888,7 @@ var _ = Describe("Consumer", func() {
 				)))
 			})
 
-			It("Aborts if the custodian process can't access Redis after CustodianMaxAttempts", func() {
+			It("Aborts if the custodian process can't poll Redis after CustodianMaxAttempts", func() {
 				consumer.opts.CustodianMaxAttempts = 2
 				consumer.opts.CustodianMaxBackoff = 100 * time.Millisecond
 				consumer.opts.CustodianPollInterval = 100 * time.Millisecond
@@ -856,7 +912,7 @@ var _ = Describe("Consumer", func() {
 				)))
 			})
 
-			It("Aborts if the heartbeat process can't access Redis after HeartbeatMaxAttempts", func() {
+			It("Aborts if the heartbeat process can't poll Redis after HeartbeatMaxAttempts", func() {
 				consumer.opts.HeartbeatMaxAttempts = 2
 				consumer.opts.HeartbeatMaxBackoff = 100 * time.Millisecond
 				consumer.opts.HeartbeatPollInterval = 100 * time.Millisecond
