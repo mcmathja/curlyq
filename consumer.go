@@ -468,7 +468,8 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		}
 	}()
 
-	attempts := 0
+	pollAttempts := 0
+	retrieveAttempts := 0
 	for {
 		cond.L.Lock()
 		for len(buffer) >= cap(buffer) && ctx.Err() == nil {
@@ -483,14 +484,17 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		c.opts.Logger.Debug("Poller: polling for new jobs...")
 		err := c.pollActiveJobs()
 		if err == redis.Nil {
-			c.opts.Logger.Debug("Poller: no new jobs found")
-			attempts = 0
+			c.opts.Logger.Debug("Poller: no new jobs detected")
+			pollAttempts = 0
 			continue
 		} else if err != nil {
 			c.opts.Logger.Debug("Poller: error polling jobs")
-			attempts++
-			c.backoff(ctx, "Poller", attempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
+			pollAttempts++
+			c.backoff(ctx, "Poller", pollAttempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 			continue
+		} else {
+			c.opts.Logger.Debug("Poller: detected new jobs")
+			pollAttempts = 0
 		}
 
 		count := cap(buffer) - len(buffer)
@@ -498,10 +502,11 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		jobs, err := c.getJobs(count)
 		if err != nil {
 			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
-			attempts++
-			c.backoff(ctx, "Poller", attempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
+			retrieveAttempts++
+			c.backoff(ctx, "Poller", retrieveAttempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 		} else {
 			c.opts.Logger.Debug("Poller: successfully retrieved jobs", "job_count", len(jobs))
+			retrieveAttempts = 0
 			for _, job := range jobs {
 				buffer <- job
 			}
