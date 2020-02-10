@@ -689,6 +689,7 @@ func (c *Consumer) enqueueScheduledJobs() (int, error) {
 // It returns an error if the Redis script fails or it cannot parse the job data.
 func (c *Consumer) getJobs(count int) ([]*Job, error) {
 	keys := []string{
+		c.queue.consumersSet,
 		c.queue.activeJobsList,
 		c.inflightSet,
 		c.queue.jobDataHash,
@@ -696,6 +697,7 @@ func (c *Consumer) getJobs(count int) ([]*Job, error) {
 
 	args := []interface{}{
 		count,
+		c.inflightSet,
 	}
 
 	result, err := c.getJobsScript.Run(c.client, keys, args...).Result()

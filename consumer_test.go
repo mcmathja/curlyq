@@ -20,6 +20,222 @@ var _ = Describe("Consumer", func() {
 	var server *miniredis.Miniredis
 	var client *redis.Client
 	var queue string
+	var consumer *Consumer
+
+	createJobs := func(count int, attempt int) []*Job {
+		jobs := make([]*Job, count)
+		for idx := 0; idx < count; idx++ {
+			uid, err := uuid.NewV4()
+			Expect(err).NotTo(HaveOccurred())
+
+			id := uid.String()
+			data := []byte(id)
+			jobs[idx] = &Job{
+				ID:      id,
+				Attempt: attempt,
+				Data:    data,
+			}
+		}
+
+		return jobs
+	}
+
+	extractIds := func(jobs []*Job) []string {
+		ids := make([]string, len(jobs))
+		for idx, job := range jobs {
+			ids[idx] = job.ID
+		}
+		return ids
+	}
+
+	enqueueJobs := func(jobs []*Job) {
+		var err error
+		hashData := map[string]interface{}{}
+		jobIDs := make([]interface{}, len(jobs))
+		for idx, job := range jobs {
+			msg, err := job.message()
+			Expect(err).NotTo(HaveOccurred())
+
+			jobIDs[idx] = job.ID
+			hashData[job.ID] = msg
+		}
+
+		err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	scheduleJobs := func(jobs []*Job, at time.Time) {
+		var err error
+		hashData := map[string]interface{}{}
+		jobEntries := make([]redis.Z, len(jobs))
+		for idx, job := range jobs {
+			msg, err := job.message()
+			Expect(err).NotTo(HaveOccurred())
+
+			hashData[job.ID] = msg
+			jobEntries[idx] = redis.Z{
+				Score:  float64(at.Unix()),
+				Member: job.ID,
+			}
+		}
+
+		err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.ZAdd(consumer.queue.scheduledJobsSet, jobEntries...).Err()
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	assignJobs := func(jobs []*Job, consumer *Consumer) {
+		var err error
+		hashData := map[string]interface{}{}
+		jobIDs := make([]interface{}, len(jobs))
+		for idx, job := range jobs {
+			msg, err := job.message()
+			Expect(err).NotTo(HaveOccurred())
+
+			jobIDs[idx] = job.ID
+			hashData[job.ID] = msg
+		}
+
+		err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.SAdd(consumer.inflightSet, jobIDs...).Err()
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	registerConsumer := func(consumer *Consumer, at time.Time) {
+		err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+			Score:  float64(at.Unix()),
+			Member: consumer.inflightSet,
+		}).Err()
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	poller := func(poll func() []interface{}) (chan []interface{}, chan struct{}) {
+		resultsChan := make(chan []interface{}, 1)
+		stopChan := make(chan struct{})
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					results := poll()
+					select {
+					case resultsChan <- results:
+					default:
+					}
+				case <-stopChan:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		return resultsChan, stopChan
+	}
+
+	activeJobsPoller := func() (chan []interface{}, chan struct{}) {
+		return poller(func() []interface{} {
+			activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			results := make([]interface{}, len(activeJobs))
+			for idx, job := range activeJobs {
+				results[idx] = job
+			}
+
+			return results
+		})
+	}
+
+	scheduledJobsPoller := func() (chan []interface{}, chan struct{}) {
+		return poller(func() []interface{} {
+			scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			results := make([]interface{}, len(scheduledJobs))
+			for idx, job := range scheduledJobs {
+				results[idx] = job
+			}
+
+			return results
+		})
+	}
+
+	deadJobsPoller := func() (chan []interface{}, chan struct{}) {
+		return poller(func() []interface{} {
+			deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			results := make([]interface{}, len(deadJobs))
+			for idx, job := range deadJobs {
+				results[idx] = job
+			}
+
+			return results
+		})
+	}
+
+	inflightJobsPoller := func(c *Consumer) (chan []interface{}, chan struct{}) {
+		return poller(func() []interface{} {
+			inflightJobs, err := client.SMembers(c.inflightSet).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			results := make([]interface{}, len(inflightJobs))
+			for idx, job := range inflightJobs {
+				results[idx] = job
+			}
+
+			return results
+		})
+	}
+
+	consumersPoller := func() (chan []interface{}, chan struct{}) {
+		return poller(func() []interface{} {
+			consumers, err := client.ZRangeWithScores(consumer.queue.consumersSet, 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			results := make([]interface{}, len(consumers))
+			for idx, consumer := range consumers {
+				results[idx] = consumer
+			}
+
+			return results
+		})
+	}
+
+	processedJobsPoller := func() (chan []string, chan string) {
+		lock := &sync.Mutex{}
+		ids := []string{}
+		ticker := time.NewTicker(100 * time.Millisecond)
+		succeeded := make(chan []string)
+		processed := make(chan string)
+
+		go func() {
+			for id := range processed {
+				lock.Lock()
+				ids = append(ids, id)
+				lock.Unlock()
+			}
+			ticker.Stop()
+		}()
+
+		go func() {
+			for range ticker.C {
+				lock.Lock()
+				succeeded <- ids
+				lock.Unlock()
+			}
+		}()
+
+		return succeeded, processed
+	}
 
 	BeforeEach(func() {
 		s, err := miniredis.Run()
@@ -41,7 +257,7 @@ var _ = Describe("Consumer", func() {
 
 	Describe("NewConsumer", func() {
 		It("Returns a valid consumer", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
 				Queue:  queue,
 			})
@@ -57,7 +273,7 @@ var _ = Describe("Consumer", func() {
 		})
 
 		It("Loads all of the expected Lua scripts", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
 				Queue:  queue,
 			})
@@ -73,7 +289,7 @@ var _ = Describe("Consumer", func() {
 		})
 
 		It("Generates a client based on the provided Address", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Address: server.Addr(),
 				Queue:   queue,
 			})
@@ -89,7 +305,7 @@ var _ = Describe("Consumer", func() {
 		})
 
 		It("Uses Client instead of Address when both are provided", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Address: "some.random.address",
 				Client:  client,
 				Queue:   queue,
@@ -115,7 +331,7 @@ var _ = Describe("Consumer", func() {
 		})
 
 		It("Applies the correct default options", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
 				Queue:  queue,
 			})
@@ -149,7 +365,7 @@ var _ = Describe("Consumer", func() {
 		})
 
 		It("Applies the minimum values to relevant options", func() {
-			consumer := NewConsumer(&ConsumerOpts{
+			consumer = NewConsumer(&ConsumerOpts{
 				Client:                   client,
 				Queue:                    queue,
 				CustodianConsumerTimeout: 1 * time.Second,
@@ -164,223 +380,6 @@ var _ = Describe("Consumer", func() {
 	})
 
 	Describe("Public API", func() {
-		var consumer *Consumer
-
-		createJobs := func(count int, attempt int) []*Job {
-			jobs := make([]*Job, count)
-			for idx := 0; idx < count; idx++ {
-				uid, err := uuid.NewV4()
-				Expect(err).NotTo(HaveOccurred())
-
-				id := uid.String()
-				data := []byte(id)
-				jobs[idx] = &Job{
-					ID:      id,
-					Attempt: attempt,
-					Data:    data,
-				}
-			}
-
-			return jobs
-		}
-
-		extractIds := func(jobs []*Job) []string {
-			ids := make([]string, len(jobs))
-			for idx, job := range jobs {
-				ids[idx] = job.ID
-			}
-			return ids
-		}
-
-		enqueueJobs := func(jobs []*Job) {
-			var err error
-			hashData := map[string]interface{}{}
-			jobIDs := make([]interface{}, len(jobs))
-			for idx, job := range jobs {
-				msg, err := job.message()
-				Expect(err).NotTo(HaveOccurred())
-
-				jobIDs[idx] = job.ID
-				hashData[job.ID] = msg
-			}
-
-			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		scheduleJobs := func(jobs []*Job, at time.Time) {
-			var err error
-			hashData := map[string]interface{}{}
-			jobEntries := make([]redis.Z, len(jobs))
-			for idx, job := range jobs {
-				msg, err := job.message()
-				Expect(err).NotTo(HaveOccurred())
-
-				hashData[job.ID] = msg
-				jobEntries[idx] = redis.Z{
-					Score:  float64(at.Unix()),
-					Member: job.ID,
-				}
-			}
-
-			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = client.ZAdd(consumer.queue.scheduledJobsSet, jobEntries...).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		assignJobs := func(jobs []*Job, consumer *Consumer) {
-			var err error
-			hashData := map[string]interface{}{}
-			jobIDs := make([]interface{}, len(jobs))
-			for idx, job := range jobs {
-				msg, err := job.message()
-				Expect(err).NotTo(HaveOccurred())
-
-				jobIDs[idx] = job.ID
-				hashData[job.ID] = msg
-			}
-
-			err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = client.SAdd(consumer.inflightSet, jobIDs...).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		registerConsumer := func(consumer *Consumer, at time.Time) {
-			err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
-				Score:  float64(at.Unix()),
-				Member: consumer.inflightSet,
-			}).Err()
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		poller := func(poll func() []interface{}) (chan []interface{}, chan struct{}) {
-			resultsChan := make(chan []interface{}, 1)
-			stopChan := make(chan struct{})
-
-			ticker := time.NewTicker(500 * time.Millisecond)
-			go func() {
-				for {
-					select {
-					case <-ticker.C:
-						results := poll()
-						select {
-						case resultsChan <- results:
-						default:
-						}
-					case <-stopChan:
-						ticker.Stop()
-						return
-					}
-				}
-			}()
-
-			return resultsChan, stopChan
-		}
-
-		activeJobsPoller := func() (chan []interface{}, chan struct{}) {
-			return poller(func() []interface{} {
-				activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-				Expect(err).NotTo(HaveOccurred())
-
-				results := make([]interface{}, len(activeJobs))
-				for idx, job := range activeJobs {
-					results[idx] = job
-				}
-
-				return results
-			})
-		}
-
-		scheduledJobsPoller := func() (chan []interface{}, chan struct{}) {
-			return poller(func() []interface{} {
-				scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
-				Expect(err).NotTo(HaveOccurred())
-
-				results := make([]interface{}, len(scheduledJobs))
-				for idx, job := range scheduledJobs {
-					results[idx] = job
-				}
-
-				return results
-			})
-		}
-
-		deadJobsPoller := func() (chan []interface{}, chan struct{}) {
-			return poller(func() []interface{} {
-				deadJobs, err := client.ZRange(consumer.queue.deadJobsSet, 0, -1).Result()
-				Expect(err).NotTo(HaveOccurred())
-
-				results := make([]interface{}, len(deadJobs))
-				for idx, job := range deadJobs {
-					results[idx] = job
-				}
-
-				return results
-			})
-		}
-
-		inflightJobsPoller := func(c *Consumer) (chan []interface{}, chan struct{}) {
-			return poller(func() []interface{} {
-				inflightJobs, err := client.SMembers(c.inflightSet).Result()
-				Expect(err).NotTo(HaveOccurred())
-
-				results := make([]interface{}, len(inflightJobs))
-				for idx, job := range inflightJobs {
-					results[idx] = job
-				}
-
-				return results
-			})
-		}
-
-		consumersPoller := func() (chan []interface{}, chan struct{}) {
-			return poller(func() []interface{} {
-				consumers, err := client.ZRangeWithScores(consumer.queue.consumersSet, 0, -1).Result()
-				Expect(err).NotTo(HaveOccurred())
-
-				results := make([]interface{}, len(consumers))
-				for idx, consumer := range consumers {
-					results[idx] = consumer
-				}
-
-				return results
-			})
-		}
-
-		processedJobsPoller := func() (chan []string, chan string) {
-			lock := &sync.Mutex{}
-			ids := []string{}
-			ticker := time.NewTicker(100 * time.Millisecond)
-			succeeded := make(chan []string)
-			processed := make(chan string)
-
-			go func() {
-				for id := range processed {
-					lock.Lock()
-					ids = append(ids, id)
-					lock.Unlock()
-				}
-				ticker.Stop()
-			}()
-
-			go func() {
-				for range ticker.C {
-					lock.Lock()
-					succeeded <- ids
-					lock.Unlock()
-				}
-			}()
-
-			return succeeded, processed
-		}
-
 		BeforeEach(func() {
 			consumer = NewConsumer(&ConsumerOpts{
 				Client:               client,
@@ -940,8 +939,6 @@ var _ = Describe("Consumer", func() {
 	})
 
 	Describe("Redis operations", func() {
-		var consumer *Consumer
-
 		BeforeEach(func() {
 			consumer = NewConsumer(&ConsumerOpts{
 				Client: client,
@@ -1113,102 +1110,115 @@ var _ = Describe("Consumer", func() {
 		})
 
 		Describe("getJobs", func() {
-			Context("When there are jobs in the queue", func() {
-				BeforeEach(func() {
-					for i := 0; i < 4; i++ {
-						var err error
-
-						id := fmt.Sprintf("job_id-%d", i)
-						data := []byte(fmt.Sprintf("job_data-%d", i))
-
-						job := &Job{
-							ID:      id,
-							Attempt: i,
-							Data:    data,
-						}
-
-						msg, err := job.message()
-						Expect(err).NotTo(HaveOccurred())
-
-						err = client.RPush(consumer.queue.activeJobsList, id).Err()
-						Expect(err).NotTo(HaveOccurred())
-
-						err = client.HSet(consumer.queue.jobDataHash, id, msg).Err()
-						Expect(err).NotTo(HaveOccurred())
-					}
-				})
-
-				Context("When count is larger than or equal to the number of jobs in the queue", func() {
-					It("Reserves all the jobs from the queue and returns them", func() {
-						jobs, err := consumer.getJobs(10)
-						Expect(err).NotTo(HaveOccurred())
-						Expect(len(jobs)).To(Equal(4))
-
-						for idx, job := range jobs {
-							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
-						}
-
-						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(activeJobs).To(BeEmpty())
-
-						inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(inflightJobs).To(ConsistOf([]string{
-							"job_id-0",
-							"job_id-1",
-							"job_id-2",
-							"job_id-3",
-						}))
-
-						for idx, job := range jobs {
-							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(job.Attempt).To(Equal(idx))
-							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
-						}
-					})
-				})
-
-				Context("When count is less than the number of jobs in the queue", func() {
-					It("Reserves up to count jobs from the queue and returns them", func() {
-						jobs, err := consumer.getJobs(2)
-						Expect(err).NotTo(HaveOccurred())
-						Expect(len(jobs)).To(Equal(2))
-
-						for idx, job := range jobs {
-							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
-						}
-
-						activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(activeJobs).To(Equal([]string{
-							"job_id-2",
-							"job_id-3",
-						}))
-
-						inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(inflightJobs).To(ConsistOf([]string{
-							"job_id-0",
-							"job_id-1",
-						}))
-
-						for idx, job := range jobs {
-							Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
-							Expect(job.Attempt).To(Equal(idx))
-							Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
-						}
-					})
+			Context("When the consumer is not registered", func() {
+				It("Returns an error", func() {
+					_, err := consumer.getJobs(10)
+					Expect(err).To(HaveOccurred())
 				})
 			})
 
-			Context("When there are no jobs in the queue", func() {
-				It("Does nothing", func() {
-					jobs, err := consumer.getJobs(10)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(len(jobs)).To(Equal(0))
+			Context("When the consumer is registered", func() {
+				BeforeEach(func() {
+					registerConsumer(consumer, time.Now())
+				})
+
+				Context("When there are jobs in the queue", func() {
+					BeforeEach(func() {
+						for i := 0; i < 4; i++ {
+							var err error
+
+							id := fmt.Sprintf("job_id-%d", i)
+							data := []byte(fmt.Sprintf("job_data-%d", i))
+
+							job := &Job{
+								ID:      id,
+								Attempt: i,
+								Data:    data,
+							}
+
+							msg, err := job.message()
+							Expect(err).NotTo(HaveOccurred())
+
+							err = client.RPush(consumer.queue.activeJobsList, id).Err()
+							Expect(err).NotTo(HaveOccurred())
+
+							err = client.HSet(consumer.queue.jobDataHash, id, msg).Err()
+							Expect(err).NotTo(HaveOccurred())
+						}
+					})
+
+					Context("When count is larger than or equal to the number of jobs in the queue", func() {
+						It("Reserves all the jobs from the queue and returns them", func() {
+							jobs, err := consumer.getJobs(10)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(len(jobs)).To(Equal(4))
+
+							for idx, job := range jobs {
+								Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
+								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
+							}
+
+							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(activeJobs).To(BeEmpty())
+
+							inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(inflightJobs).To(ConsistOf([]string{
+								"job_id-0",
+								"job_id-1",
+								"job_id-2",
+								"job_id-3",
+							}))
+
+							for idx, job := range jobs {
+								Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
+								Expect(job.Attempt).To(Equal(idx))
+								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
+							}
+						})
+					})
+
+					Context("When count is less than the number of jobs in the queue", func() {
+						It("Reserves up to count jobs from the queue and returns them", func() {
+							jobs, err := consumer.getJobs(2)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(len(jobs)).To(Equal(2))
+
+							for idx, job := range jobs {
+								Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
+								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
+							}
+
+							activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(activeJobs).To(Equal([]string{
+								"job_id-2",
+								"job_id-3",
+							}))
+
+							inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(inflightJobs).To(ConsistOf([]string{
+								"job_id-0",
+								"job_id-1",
+							}))
+
+							for idx, job := range jobs {
+								Expect(job.ID).To(Equal(fmt.Sprintf("job_id-%d", idx)))
+								Expect(job.Attempt).To(Equal(idx))
+								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
+							}
+						})
+					})
+				})
+
+				Context("When there are no jobs in the queue", func() {
+					It("Does nothing", func() {
+						jobs, err := consumer.getJobs(10)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(len(jobs)).To(Equal(0))
+					})
 				})
 			})
 		})
