@@ -55,7 +55,7 @@ CurlyQ exposes three key types: Jobs, Producers, and Consumers.
 A Job wraps your data. In most cases, that's all you'll ever need to know about it:
 
 ```go
-job := &cq.Job{
+job := cq.Job{
 	Data: []byte("Some data."),
 }
 ```
@@ -95,7 +95,7 @@ Running `producer.Perform(job)` will add a job to the queue to be run asynchrono
 You can deduplicate jobs by pre-assigning them IDs:
 
 ```go
-job := &Job{
+job := cq.Job{
 	ID: "todays_job",
 }
 
