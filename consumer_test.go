@@ -3,6 +3,7 @@ package curlyq
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -401,7 +402,7 @@ var _ = Describe("Consumer", func() {
 			start := func(handler HandlerFunc) chan error {
 				errors := make(chan error)
 				go func() {
-					errors <- consumer.Consume(handler, syscall.SIGUSR1)
+					errors <- consumer.Consume(handler, syscall.SIGALRM)
 				}()
 
 				return errors
@@ -418,7 +419,10 @@ var _ = Describe("Consumer", func() {
 
 				enqueueJobs(createJobs(1, 0))
 				<-block
-				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+
+				process, err := os.FindProcess(os.Getpid())
+				Expect(err).NotTo(HaveOccurred())
+				process.Signal(syscall.SIGALRM)
 				close(block)
 				Eventually(errors).Should(Receive(BeNil()))
 			})
@@ -434,7 +438,9 @@ var _ = Describe("Consumer", func() {
 
 				enqueueJobs(createJobs(1, 0))
 				<-block
-				syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+				process, err := os.FindProcess(os.Getpid())
+				Expect(err).NotTo(HaveOccurred())
+				process.Signal(syscall.SIGALRM)
 				Eventually(errors).Should(Receive(HaveOccurred()))
 				close(block)
 			})
