@@ -25,8 +25,8 @@ type Consumer struct {
 	id          string
 	inflightSet string
 	queue       *queue
-	onAbort     sync.Once
-	processes   sync.WaitGroup
+	onAbort     *sync.Once
+	processes   *sync.WaitGroup
 
 	// Scripts
 	ackJobScript                *redis.Script
@@ -219,13 +219,15 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 		})
 	}
 
-	id := uuid.Must(uuid.NewV4()).String()
 	queue := newQueue(&queueOpts{
 		Name: opts.Queue,
 	})
-	inflightSet := fmt.Sprintf("%s:%s", queue.inflightJobsPrefix, id)
+
 	errors := make(chan error)
-	onAbort := sync.Once{}
+	id := uuid.Must(uuid.NewV4()).String()
+	inflightSet := fmt.Sprintf("%s:%s", queue.inflightJobsPrefix, id)
+	onAbort := &sync.Once{}
+	processes := &sync.WaitGroup{}
 
 	// Embed Lua scripts
 	prepScripts()
@@ -241,12 +243,14 @@ func NewConsumer(opts *ConsumerOpts) *Consumer {
 	return &Consumer{
 		opts: opts.withDefaults(),
 
+		client: client,
+		queue:  queue,
+
+		errors:      errors,
 		id:          id,
-		client:      client,
-		queue:       queue,
 		inflightSet: inflightSet,
 		onAbort:     onAbort,
-		errors:      errors,
+		processes:   processes,
 
 		ackJobScript:                ackJobScript,
 		enqueueScheduledJobsScript:  enqueueScheduledJobsScript,
@@ -321,7 +325,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 		case <-done:
 			break
 		case <-time.After(c.opts.ShutdownGracePeriod):
-			return fmt.Errorf("Failed to shut down within ShutdownGracePeriod.")
+			return fmt.Errorf("failed to shut down within ShutdownGracePeriod")
 		}
 	}
 
