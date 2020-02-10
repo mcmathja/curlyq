@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -349,8 +348,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 	if len(signals) == 0 {
 		signals = []os.Signal{
-			syscall.SIGINT,
-			syscall.SIGTERM,
+			os.Interrupt,
 		}
 	}
 
