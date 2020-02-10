@@ -273,18 +273,21 @@ type HandlerFunc func(context.Context, Job) error
 // The Consumer runs indefinitely until the provided context is canceled.
 // An error is returned if the Consumer cannot shut down gracefully.
 func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err error) {
+	c.opts.Logger.Info("Consumer started polling", "id", c.id, "queue", c.queue.name)
+	defer c.opts.Logger.Info("Consumer finished polling", "id", c.id, "queue", c.queue.name)
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Configure the Redis client with the provided context.
 	c.client = c.client.WithContext(ctx)
 
-	// A buffer to store locally queued jobs.
+	// Control mechanisms for managing local job buffer.
 	buffer := make(chan *Job, c.opts.PollerBufferSize)
-	cond := sync.NewCond(&sync.Mutex{})
+	bufferFree := sync.NewCond(&sync.Mutex{})
 	go func() {
 		<-ctx.Done()
-		cond.Broadcast()
+		bufferFree.Broadcast()
 	}()
 
 	// Fire off a synchronous heartbeat before polling for any jobs.
@@ -299,8 +302,8 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	go c.runHeartbeat(ctx)
 	go c.runScheduler(ctx)
 	go c.runCustodian(ctx)
-	go c.runProcessor(ctx, buffer, cond, handler)
-	go c.runPoller(ctx, buffer, cond)
+	go c.runProcessor(ctx, buffer, bufferFree, handler)
+	go c.runPoller(ctx, buffer, bufferFree)
 
 	// Block until the provided context is done.
 	select {
@@ -310,6 +313,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	}
 
 	// Wait for the child processes to finish.
+	c.opts.Logger.Info("Consumer shutting down", "id", c.id, "queue", c.queue.name)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -389,13 +393,13 @@ func (c *Consumer) runCustodian(ctx context.Context) {
 
 		count, err := c.reenqueueOrphanedJobs()
 		if err != nil {
-			c.opts.Logger.Error("Custodian: failed to re-enqueue jobs", "error", err)
 			attempts++
+			c.opts.Logger.Warn("Custodian: failed to re-enqueue jobs", "attempt", attempts, "error", err)
 			c.backoff(ctx, "Custodian", attempts, c.opts.CustodianMaxBackoff, c.opts.CustodianMaxAttempts)
 			continue
 		} else {
-			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
 			attempts = 0
+			c.opts.Logger.Debug("Custodian: successfully re-enqueued jobs", "job_count", count)
 			if count == c.opts.CustodianMaxJobs {
 				continue
 			}
@@ -430,13 +434,13 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 		c.opts.Logger.Debug("Heartbeat: updating consumer...")
 		err := c.registerConsumer()
 		if err != nil {
-			c.opts.Logger.Error("Heartbeat: failed to update", "error", err)
 			attempts++
+			c.opts.Logger.Warn("Heartbeat: failed to update", "attempt", attempts, "error", err)
 			c.backoff(ctx, "Heartbeat", attempts, c.opts.HeartbeatMaxBackoff, c.opts.HeartbeatMaxAttempts)
 			continue
 		} else {
-			c.opts.Logger.Debug("Heartbeat: update successful")
 			attempts = 0
+			c.opts.Logger.Debug("Heartbeat: update successful")
 		}
 
 		select {
@@ -450,7 +454,7 @@ func (c *Consumer) runHeartbeat(ctx context.Context) {
 
 // runPoller starts a processing loop that handles
 // polling Redis for new jobs and buffering them locally.
-func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.Cond) {
+func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, bufferFree *sync.Cond) {
 	defer c.processes.Done()
 
 	c.opts.Logger.Debug("Poller: process started")
@@ -471,11 +475,11 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 	pollAttempts := 0
 	retrieveAttempts := 0
 	for {
-		cond.L.Lock()
+		bufferFree.L.Lock()
 		for len(buffer) >= cap(buffer) && ctx.Err() == nil {
-			cond.Wait()
+			bufferFree.Wait()
 		}
-		cond.L.Unlock()
+		bufferFree.L.Unlock()
 
 		if ctx.Err() != nil {
 			return
@@ -484,29 +488,29 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 		c.opts.Logger.Debug("Poller: polling for new jobs...")
 		err := c.pollActiveJobs()
 		if err == redis.Nil {
-			c.opts.Logger.Debug("Poller: no new jobs detected")
 			pollAttempts = 0
+			c.opts.Logger.Debug("Poller: no new jobs detected")
 			continue
 		} else if err != nil {
-			c.opts.Logger.Debug("Poller: error polling jobs")
 			pollAttempts++
+			c.opts.Logger.Warn("Poller: error polling jobs", "attempt", pollAttempts, "error", err)
 			c.backoff(ctx, "Poller", pollAttempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 			continue
 		} else {
-			c.opts.Logger.Debug("Poller: detected new jobs")
 			pollAttempts = 0
+			c.opts.Logger.Debug("Poller: detected new jobs")
 		}
 
 		count := cap(buffer) - len(buffer)
 		c.opts.Logger.Debug("Poller: retrieving jobs...", "job_count", count)
 		jobs, err := c.getJobs(count)
 		if err != nil {
-			c.opts.Logger.Error("Poller: error retrieving jobs", "error", err)
 			retrieveAttempts++
+			c.opts.Logger.Warn("Poller: error retrieving jobs", "attempt", retrieveAttempts, "error", err)
 			c.backoff(ctx, "Poller", retrieveAttempts, c.opts.PollerMaxBackoff, c.opts.PollerMaxAttempts)
 		} else {
-			c.opts.Logger.Debug("Poller: successfully retrieved jobs", "job_count", len(jobs))
 			retrieveAttempts = 0
+			c.opts.Logger.Debug("Poller: successfully retrieved jobs", "job_count", len(jobs))
 			for _, job := range jobs {
 				buffer <- job
 			}
@@ -516,7 +520,7 @@ func (c *Consumer) runPoller(ctx context.Context, buffer chan *Job, cond *sync.C
 
 // runProcessor starts a processing loop that handles
 // processing buffered jobs with the user-supplied handler function.
-func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *sync.Cond, handler HandlerFunc) {
+func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, bufferFree *sync.Cond, handler HandlerFunc) {
 	defer c.processes.Done()
 
 	c.opts.Logger.Debug("Processor: process started")
@@ -551,15 +555,18 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 				tokens <- struct{}{}
 				return
 			}
-			cond.L.Lock()
-			cond.Broadcast()
-			cond.L.Unlock()
+			bufferFree.L.Lock()
+			bufferFree.Broadcast()
+			bufferFree.L.Unlock()
 
 			// Execute the job concurrently.
 			go func() {
+				c.opts.Logger.Debug("Processing job", "id", job.ID)
 				err := c.executeJob(ctx, job, handler)
 				if err != nil {
+					c.opts.Logger.Debug("Job failed", "id", job.ID)
 					if job.Attempt < c.opts.ProcessorMaxRetries {
+						c.opts.Logger.Debug("Retrying job", "id", job.ID, "retries", job.Attempt)
 						_, err := c.retryJob(job)
 						if err != nil {
 							c.abort(ErrFailedToRetryJob{
@@ -568,6 +575,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 							})
 						}
 					} else {
+						c.opts.Logger.Debug("Killing job", "id", job.ID, "retries", job.Attempt)
 						_, err := c.killJob(job)
 						if err != nil {
 							c.abort(ErrFailedToKillJob{
@@ -577,6 +585,7 @@ func (c *Consumer) runProcessor(ctx context.Context, buffer chan *Job, cond *syn
 						}
 					}
 				} else {
+					c.opts.Logger.Debug("Job successful", "id", job.ID)
 					_, err := c.ackJob(job)
 					if err != nil {
 						c.abort(ErrFailedToAckJob{
@@ -612,8 +621,8 @@ func (c *Consumer) runScheduler(ctx context.Context) {
 
 		count, err := c.enqueueScheduledJobs()
 		if err != nil {
-			c.opts.Logger.Error("Scheduler: failed to enqueue jobs", "error", err)
 			attempts++
+			c.opts.Logger.Warn("Scheduler: failed to enqueue jobs", "attempt", attempts, "error", err)
 			c.backoff(ctx, "Scheduler", attempts, c.opts.SchedulerMaxBackoff, c.opts.SchedulerMaxAttempts)
 			continue
 		} else {
@@ -832,6 +841,7 @@ func (c *Consumer) executeJob(ctx context.Context, job *Job, handler HandlerFunc
 // This starts the shut down process.
 func (c *Consumer) abort(err error) {
 	c.onAbort.Do(func() {
+		c.opts.Logger.Error("Critical error triggered abort", "error", err)
 		c.errors <- err
 	})
 }
