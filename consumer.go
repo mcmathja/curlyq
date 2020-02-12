@@ -362,7 +362,7 @@ func (c *Consumer) Consume(handler HandlerFunc, signals ...os.Signal) error {
 	}()
 
 	// Wait until we receive a signal or an error.
-	termChan := make(chan os.Signal)
+	termChan := make(chan os.Signal, 1)
 	signal.Notify(termChan, signals...)
 	select {
 	case err := <-errChan:
@@ -868,8 +868,6 @@ func (c *Consumer) backoff(ctx context.Context, process string, attempt int, max
 	case <-ctx.Done():
 	case <-timer.C:
 	}
-
-	return
 }
 
 // expBackoff implements a simple exponential backoff function.

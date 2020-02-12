@@ -986,9 +986,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When this consumer does not have ownership of the job", func() {
 				BeforeEach(func() {
-					var err error
-
-					err = client.HSet(consumer.queue.jobDataHash, job.ID, job.Data).Err()
+					err := client.HSet(consumer.queue.jobDataHash, job.ID, job.Data).Err()
 					Expect(err).NotTo(HaveOccurred())
 				})
 
