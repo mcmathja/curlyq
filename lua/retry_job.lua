@@ -17,8 +17,6 @@ if removed == 1 then
 
   -- Reset the job data
   redis.call("hset", KEYS[3], ARGV[1], ARGV[3])
-
-  return 1
 end
 
-return 0
+return removed

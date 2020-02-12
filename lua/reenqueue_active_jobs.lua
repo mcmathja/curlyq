@@ -1,5 +1,6 @@
 -- KEYS[1]: this consumer's inflight set
 -- KEYS[2]: the active jobs list
+-- KEYS[3]: the signal list
 
 -- ARGV[]: the list of job IDs
 
@@ -14,5 +15,9 @@ for _,job_id in ipairs(ARGV) do
     redis.call("rpush", KEYS[2], job_id)
   end
 end
+
+-- Signal that there are jobs in the queue
+redis.call("del", KEYS[3])
+redis.call("lpush", KEYS[3], 1)
 
 return true

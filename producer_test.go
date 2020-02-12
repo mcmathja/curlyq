@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/alicebob/miniredis"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis"
 	"github.com/gofrs/uuid"
 
@@ -272,7 +272,7 @@ var _ = Describe("Producer", func() {
 		})
 
 		Describe("Perform", func() {
-			It("Creates a new job and schedules it to run after the provided duration", func() {
+			It("Creates a new job and enqueues it", func() {
 				id, err := producer.Perform(job)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(id).To(Equal(job.ID))
@@ -284,6 +284,10 @@ var _ = Describe("Producer", func() {
 				activeJobs, err := client.LRange(producer.queue.activeJobsList, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(activeJobs).To(Equal([]string{job.ID}))
+
+				signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(signals).To(Equal([]string{"1"}))
 			})
 
 			Context("When a job with that ID already exists", func() {
@@ -365,6 +369,9 @@ var _ = Describe("Producer", func() {
 				activeJobs, err := client.LRange(producer.queue.activeJobsList, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(activeJobs).To(Equal([]string{job.ID}))
+
+				signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
+				Expect(signals).To(Equal([]string{"1"}))
 			})
 
 			Context("When a job with that ID already exists", func() {
@@ -381,6 +388,9 @@ var _ = Describe("Producer", func() {
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(jobData).To(Equal("Preexisting Data"))
+
+					signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(BeEmpty())
 				})
 			})
 

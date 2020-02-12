@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alicebob/miniredis"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis"
 	"github.com/gofrs/uuid"
 
@@ -65,6 +65,12 @@ var _ = Describe("Consumer", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		err = client.RPush(consumer.queue.activeJobsList, jobIDs...).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.Del(consumer.queue.signalList).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		err = client.LPush(consumer.queue.signalList, 1).Err()
 		Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -643,13 +649,13 @@ var _ = Describe("Consumer", func() {
 					<-running
 				}
 
-				Eventually(active).Should(Receive(ConsistOf(ids[4:8])))
+				Eventually(active).Should(Receive(ConsistOf(ids[6:])))
 				cancel()
-				Eventually(active).Should(Receive(ConsistOf(ids[1:9])))
+				Eventually(active).Should(Receive(ConsistOf(ids[2:])))
 				close(block)
 				Eventually(succeeded).Should(Receive(ConsistOf([]string{
 					ids[0],
-					ids[9],
+					ids[1],
 				})))
 				close(running)
 			})
@@ -1032,11 +1038,30 @@ var _ = Describe("Consumer", func() {
 					Expect(activeJobs[0]).To(Equal("job_id-1"))
 					Expect(activeJobs[1]).To(Equal("job_id-2"))
 
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(Equal([]string{"1"}))
+
 					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(scheduledJobs)).To(Equal(2))
 					Expect(scheduledJobs[0]).To(Equal("job_id-3"))
 					Expect(scheduledJobs[1]).To(Equal("job_id-4"))
+				})
+
+				Context("When there is already a signal", func() {
+					BeforeEach(func() {
+						err := client.LPush(consumer.queue.signalList, 1).Err()
+						Expect(err).NotTo(HaveOccurred())
+					})
+
+					It("Doesn't add extras", func() {
+						count, err := consumer.enqueueScheduledJobs()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(count).To(Equal(2))
+
+						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(signals).To(Equal([]string{"1"}))
+					})
 				})
 			})
 
@@ -1070,6 +1095,9 @@ var _ = Describe("Consumer", func() {
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(activeJobs)).To(Equal(0))
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(BeEmpty())
 				})
 			})
 
@@ -1149,6 +1177,9 @@ var _ = Describe("Consumer", func() {
 							err = client.HSet(consumer.queue.jobDataHash, id, msg).Err()
 							Expect(err).NotTo(HaveOccurred())
 						}
+
+						err := client.LPush(consumer.queue.signalList, 1).Err()
+						Expect(err).NotTo(HaveOccurred())
 					})
 
 					Context("When count is larger than or equal to the number of jobs in the queue", func() {
@@ -1180,6 +1211,9 @@ var _ = Describe("Consumer", func() {
 								Expect(job.Attempt).To(Equal(idx))
 								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 							}
+
+							signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+							Expect(signals).To(BeEmpty())
 						})
 					})
 
@@ -1213,6 +1247,9 @@ var _ = Describe("Consumer", func() {
 								Expect(job.Attempt).To(Equal(idx))
 								Expect(string(job.Data)).To(Equal(fmt.Sprintf("job_data-%d", idx)))
 							}
+
+							signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+							Expect(signals).To(Equal([]string{"1"}))
 						})
 					})
 				})
@@ -1222,6 +1259,9 @@ var _ = Describe("Consumer", func() {
 						jobs, err := consumer.getJobs(10)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(len(jobs)).To(Equal(0))
+
+						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(signals).To(BeEmpty())
 					})
 				})
 			})
@@ -1349,6 +1389,9 @@ var _ = Describe("Consumer", func() {
 					inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(inflightJobs).To(BeEmpty())
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(Equal([]string{"1"}))
 				})
 			})
 
@@ -1373,6 +1416,9 @@ var _ = Describe("Consumer", func() {
 					inflightJobs, err := client.SMembers(consumer.inflightSet).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(inflightJobs).To(BeEmpty())
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(Equal([]string{"1"}))
 				})
 			})
 		})
@@ -1391,6 +1437,9 @@ var _ = Describe("Consumer", func() {
 					activeJobs, err := client.LRange(consumer.queue.activeJobsList, 0, -1).Result()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(activeJobs).To(BeEmpty())
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(BeEmpty())
 				})
 			})
 
@@ -1436,6 +1485,9 @@ var _ = Describe("Consumer", func() {
 						Expect(err).NotTo(HaveOccurred())
 						Expect(inflightJobs).To(ConsistOf([]string{jobIDs[i]}))
 					}
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(BeEmpty())
 				})
 			})
 
@@ -1503,6 +1555,9 @@ var _ = Describe("Consumer", func() {
 						Expect(err).NotTo(HaveOccurred())
 						Expect(inflightJobs).To(ConsistOf([]string{}))
 					}
+
+					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(signals).To(Equal([]string{"1"}))
 				})
 
 				Context("When there are more jobs to process than CustodianMaxJobs", func() {
@@ -1568,6 +1623,9 @@ var _ = Describe("Consumer", func() {
 						for _, job := range activeJobs {
 							Expect(inflightJobs).NotTo(ContainElement(job))
 						}
+
+						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
 
@@ -1609,6 +1667,9 @@ var _ = Describe("Consumer", func() {
 							Expect(err).NotTo(HaveOccurred())
 							Expect(inflightJobs).To(ConsistOf([]string{}))
 						}
+
+						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
 
@@ -1647,6 +1708,9 @@ var _ = Describe("Consumer", func() {
 							Expect(err).NotTo(HaveOccurred())
 							Expect(inflightJobs).To(ConsistOf([]string{}))
 						}
+
+						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
 			})

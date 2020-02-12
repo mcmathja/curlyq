@@ -145,6 +145,7 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 	keys := []string{
 		p.queue.jobDataHash,
 		p.queue.activeJobsList,
+		p.queue.signalList,
 	}
 
 	args := []interface{}{

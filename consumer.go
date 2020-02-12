@@ -672,6 +672,7 @@ func (c *Consumer) enqueueScheduledJobs() (int, error) {
 	keys := []string{
 		c.queue.scheduledJobsSet,
 		c.queue.activeJobsList,
+		c.queue.signalList,
 	}
 
 	args := []interface{}{
@@ -691,6 +692,7 @@ func (c *Consumer) getJobs(count int) ([]*Job, error) {
 		c.queue.activeJobsList,
 		c.inflightSet,
 		c.queue.jobDataHash,
+		c.queue.signalList,
 	}
 
 	args := []interface{}{
@@ -748,8 +750,8 @@ func (c *Consumer) killJob(job *Job) (bool, error) {
 // It returns an error if it times out or the context is canceled.
 func (c *Consumer) pollActiveJobs() error {
 	return c.client.BRPopLPush(
-		c.queue.activeJobsList,
-		c.queue.activeJobsList,
+		c.queue.signalList,
+		c.queue.signalList,
 		c.opts.PollerPollDuration,
 	).Err()
 }
@@ -760,6 +762,7 @@ func (c *Consumer) reenqueueActiveJobs(jobs []*Job) error {
 	keys := []string{
 		c.inflightSet,
 		c.queue.activeJobsList,
+		c.queue.signalList,
 	}
 
 	args := make([]interface{}, len(jobs))
@@ -777,6 +780,7 @@ func (c *Consumer) reenqueueOrphanedJobs() (int, error) {
 	keys := []string{
 		c.queue.consumersSet,
 		c.queue.activeJobsList,
+		c.queue.signalList,
 	}
 
 	expiredBefore := time.Now().Add(-c.opts.HeartbeatPollInterval).Add(-c.opts.CustodianConsumerTimeout)

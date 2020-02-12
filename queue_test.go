@@ -23,6 +23,7 @@ var _ = Describe("Queue", func() {
 				Expect(q.inflightJobsPrefix).To(Equal("name:inflight"))
 				Expect(q.jobDataHash).To(Equal("name:data"))
 				Expect(q.scheduledJobsSet).To(Equal("name:scheduled"))
+				Expect(q.signalList).To(Equal("name:signal"))
 			})
 		})
 

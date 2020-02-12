@@ -1,5 +1,6 @@
 -- KEYS[1]: the consumer set
 -- KEYS[2]: the active job list
+-- KEYS[3]: the signal list
 
 -- ARGV[1]: the timestamp before which a consumer is considered expired
 -- ARGV[2]: the max number of jobs to process in a given run
@@ -33,4 +34,12 @@ for _,consumer in ipairs(consumers) do
   end
 end
 
-return tonumber(ARGV[2]) - limit
+local processed = tonumber(ARGV[2]) - limit
+
+if processed > 0 then
+  -- Signal that there are jobs in the queue
+  redis.call("del", KEYS[3])
+  redis.call("lpush", KEYS[3], 1)
+end
+
+return processed

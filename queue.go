@@ -13,6 +13,7 @@ type queue struct {
 	inflightJobsPrefix string
 	jobDataHash        string
 	scheduledJobsSet   string
+	signalList         string
 }
 
 type queueOpts struct {
@@ -30,6 +31,7 @@ func newQueue(opts *queueOpts) *queue {
 	inflightJobsPrefix := fmt.Sprintf("%s:inflight", opts.Name)
 	jobDataHash := fmt.Sprintf("%s:data", opts.Name)
 	scheduledJobsSet := fmt.Sprintf("%s:scheduled", opts.Name)
+	signalList := fmt.Sprintf("%s:signal", opts.Name)
 
 	return &queue{
 		name: opts.Name,
@@ -40,5 +42,6 @@ func newQueue(opts *queueOpts) *queue {
 		inflightJobsPrefix: inflightJobsPrefix,
 		jobDataHash:        jobDataHash,
 		scheduledJobsSet:   scheduledJobsSet,
+		signalList:         signalList,
 	}
 }
