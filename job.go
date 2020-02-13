@@ -2,7 +2,7 @@ package curlyq
 
 import (
 	"github.com/gofrs/uuid"
-	"github.com/vmihailenco/msgpack"
+	"github.com/vmihailenco/msgpack/v4"
 )
 
 // A Job provides a wrapper for your job data.

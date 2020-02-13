@@ -287,6 +287,7 @@ var _ = Describe("Producer", func() {
 
 				signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
 				Expect(err).NotTo(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
 				Expect(signals).To(Equal([]string{"1"}))
 			})
 
@@ -371,6 +372,7 @@ var _ = Describe("Producer", func() {
 				Expect(activeJobs).To(Equal([]string{job.ID}))
 
 				signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
+				Expect(err).NotTo(HaveOccurred())
 				Expect(signals).To(Equal([]string{"1"}))
 			})
 
@@ -390,6 +392,7 @@ var _ = Describe("Producer", func() {
 					Expect(jobData).To(Equal("Preexisting Data"))
 
 					signals, err := client.LRange(producer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(BeEmpty())
 				})
 			})

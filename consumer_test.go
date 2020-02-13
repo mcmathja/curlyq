@@ -1039,6 +1039,7 @@ var _ = Describe("Consumer", func() {
 					Expect(activeJobs[1]).To(Equal("job_id-2"))
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(Equal([]string{"1"}))
 
 					scheduledJobs, err := client.ZRange(consumer.queue.scheduledJobsSet, 0, -1).Result()
@@ -1060,6 +1061,7 @@ var _ = Describe("Consumer", func() {
 						Expect(count).To(Equal(2))
 
 						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
@@ -1097,6 +1099,7 @@ var _ = Describe("Consumer", func() {
 					Expect(len(activeJobs)).To(Equal(0))
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(BeEmpty())
 				})
 			})
@@ -1213,6 +1216,7 @@ var _ = Describe("Consumer", func() {
 							}
 
 							signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+							Expect(err).NotTo(HaveOccurred())
 							Expect(signals).To(BeEmpty())
 						})
 					})
@@ -1249,6 +1253,7 @@ var _ = Describe("Consumer", func() {
 							}
 
 							signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+							Expect(err).NotTo(HaveOccurred())
 							Expect(signals).To(Equal([]string{"1"}))
 						})
 					})
@@ -1261,6 +1266,7 @@ var _ = Describe("Consumer", func() {
 						Expect(len(jobs)).To(Equal(0))
 
 						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 						Expect(signals).To(BeEmpty())
 					})
 				})
@@ -1391,6 +1397,7 @@ var _ = Describe("Consumer", func() {
 					Expect(inflightJobs).To(BeEmpty())
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(Equal([]string{"1"}))
 				})
 			})
@@ -1418,6 +1425,7 @@ var _ = Describe("Consumer", func() {
 					Expect(inflightJobs).To(BeEmpty())
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(Equal([]string{"1"}))
 				})
 			})
@@ -1439,6 +1447,7 @@ var _ = Describe("Consumer", func() {
 					Expect(activeJobs).To(BeEmpty())
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(BeEmpty())
 				})
 			})
@@ -1487,6 +1496,7 @@ var _ = Describe("Consumer", func() {
 					}
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(BeEmpty())
 				})
 			})
@@ -1557,6 +1567,7 @@ var _ = Describe("Consumer", func() {
 					}
 
 					signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+					Expect(err).NotTo(HaveOccurred())
 					Expect(signals).To(Equal([]string{"1"}))
 				})
 
@@ -1625,6 +1636,7 @@ var _ = Describe("Consumer", func() {
 						}
 
 						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
@@ -1669,6 +1681,7 @@ var _ = Describe("Consumer", func() {
 						}
 
 						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
@@ -1710,6 +1723,7 @@ var _ = Describe("Consumer", func() {
 						}
 
 						signals, err := client.LRange(consumer.queue.signalList, 0, -1).Result()
+						Expect(err).NotTo(HaveOccurred())
 						Expect(signals).To(Equal([]string{"1"}))
 					})
 				})
