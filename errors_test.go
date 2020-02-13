@@ -60,4 +60,15 @@ var _ = Describe("Errors", func() {
 			Expect(err.Error()).To(Equal(expectedMsg))
 		})
 	})
+
+	Describe("ErrJobAlreadyExists", func() {
+		It("Wraps an error and a job", func() {
+			err := ErrJobAlreadyExists{
+				Job: job,
+			}
+
+			expectedMsg := "Job with id test-job already exists"
+			Expect(err.Error()).To(Equal(expectedMsg))
+		})
+	})
 })

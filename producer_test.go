@@ -163,9 +163,10 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					id, err := producer.PerformAfter(duration, job)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(id).To(Equal(job.ID))
+					_, err := producer.PerformAfter(duration, job)
+					Expect(err).To(Equal(ErrJobAlreadyExists{
+						Job: job,
+					}))
 
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -232,9 +233,10 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					id, err := producer.PerformAt(moment, job)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(id).To(Equal(job.ID))
+					_, err := producer.PerformAt(moment, job)
+					Expect(err).To(Equal(ErrJobAlreadyExists{
+						Job: job,
+					}))
 
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -298,9 +300,10 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					id, err := producer.Perform(job)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(id).To(Equal(job.ID))
+					_, err := producer.Perform(job)
+					Expect(err).To(Equal(ErrJobAlreadyExists{
+						Job: job,
+					}))
 
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -383,9 +386,10 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					id, err := producer.pushJob(ctx, job)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(id).To(Equal(job.ID))
+					_, err := producer.pushJob(ctx, job)
+					Expect(err).To(Equal(ErrJobAlreadyExists{
+						Job: job,
+					}))
 
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -454,9 +458,10 @@ var _ = Describe("Producer", func() {
 				})
 
 				It("Does not overwrite the existing job data", func() {
-					id, err := producer.scheduleJob(ctx, at, job)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(id).To(Equal(job.ID))
+					_, err := producer.scheduleJob(ctx, at, job)
+					Expect(err).To(Equal(ErrJobAlreadyExists{
+						Job: job,
+					}))
 
 					jobData, err := client.HGet(producer.queue.jobDataHash, job.ID).Result()
 					Expect(err).NotTo(HaveOccurred())

@@ -47,3 +47,13 @@ type ErrExceededMaxBackoff struct {
 func (e ErrExceededMaxBackoff) Error() string {
 	return fmt.Sprintf("Process %s exceeded maximum %d backoff attempts", e.Process, e.Attempt)
 }
+
+// ErrJobAlreadyExists indicates that a job was not enqueued or scheduled
+// because another job with the same ID already exists in Redis.
+type ErrJobAlreadyExists struct {
+	Job Job
+}
+
+func (e ErrJobAlreadyExists) Error() string {
+	return fmt.Sprintf("Job with id %s already exists", e.Job.ID)
+}

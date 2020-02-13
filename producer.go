@@ -133,7 +133,8 @@ func (p *Producer) PerformCtx(ctx context.Context, job Job) (string, error) {
 // Redis operations
 
 // pushJob pushes a job onto the active queue.
-// It returns error if the Redis script fails or it cannot marshal the job.
+// It returns an error if the Redis script fails, if it cannot marshal the job,
+// or if a job with the provided ID already exists in Redis.
 func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 	msg, err := job.message()
 	if err != nil {
@@ -153,9 +154,15 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 		msg,
 	}
 
-	err = p.pushJobScript.Run(client, keys, args...).Err()
+	enqueued, err := p.pushJobScript.Run(client, keys, args...).Int()
 	if err != nil {
 		return "", err
+	}
+
+	if enqueued == 0 {
+		return "", ErrJobAlreadyExists{
+			Job: job,
+		}
 	}
 
 	p.opts.Logger.Info("Enqueued job", "job_id", job.ID)
@@ -163,7 +170,8 @@ func (p *Producer) pushJob(ctx context.Context, job Job) (string, error) {
 }
 
 // scheduleJob inserts the job into the scheduled set.
-// It returns error if the Redis script fails or it cannot marshal the job.
+// It returns an error if the Redis script fails, if it cannot marshal the job,
+// or if a job with the provided ID already exists in Redis.
 func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (string, error) {
 	msg, err := job.message()
 	if err != nil {
@@ -183,9 +191,15 @@ func (p *Producer) scheduleJob(ctx context.Context, at time.Time, job Job) (stri
 		float64(at.Unix()),
 	}
 
-	err = p.scheduleJobScript.Run(client, keys, args...).Err()
+	scheduled, err := p.scheduleJobScript.Run(client, keys, args...).Int()
 	if err != nil {
 		return "", err
+	}
+
+	if scheduled == 0 {
+		return "", ErrJobAlreadyExists{
+			Job: job,
+		}
 	}
 
 	p.opts.Logger.Info("Scheduled job", "job_id", job.ID, "scheduled_at", at.Format(time.RFC1123Z))
