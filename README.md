@@ -76,9 +76,9 @@ producer := cq.NewProducer(&cq.ProducerOpts{
 You can also provide an existing [go-redis](https://github.com/go-redis/redis) instance if you would like to configure the queue to run on a more advanced Redis configuration or set up your own retry and timeout logic for network calls:
 
 ```go
-import "github.com/go-redis/redis"
+import "github.com/go-redis/redis/v7"
 
-client := redis.NewClient(&redis.Client{
+client := redis.NewClient(&redis.Options{
 	Password: "p@55vvoRd",
 	DB: 3,
 	MaxRetries: 2,

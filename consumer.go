@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v7"
 	"github.com/gofrs/uuid"
 )
 
@@ -282,11 +282,14 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	c.opts.Logger.Info("Consumer started polling", "id", c.id, "queue", c.queue.name)
 	defer c.opts.Logger.Info("Consumer finished polling", "id", c.id, "queue", c.queue.name)
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancelCtx := context.WithCancel(ctx)
+	defer cancelCtx()
 
-	// Configure the Redis client with the provided context.
-	c.client = c.client.WithContext(ctx)
+	// Configure the Redis client with a separate request context.
+	reqCtx, cancelReqCtx := context.WithCancel(context.Background())
+	defer cancelReqCtx()
+
+	c.client = c.client.WithContext(reqCtx)
 
 	// Control mechanisms for managing local job buffer.
 	buffer := make(chan *Job, c.opts.PollerBufferSize)
@@ -315,7 +318,7 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 	select {
 	case <-ctx.Done():
 	case err = <-c.errors:
-		cancel()
+		cancelCtx()
 	}
 
 	// Wait for the child processes to finish.
@@ -335,6 +338,9 @@ func (c *Consumer) ConsumeCtx(ctx context.Context, handler HandlerFunc) (err err
 		case <-done:
 			break
 		case <-time.After(c.opts.ShutdownGracePeriod):
+			c.onAbort.Do(func() {
+				cancelReqCtx()
+			})
 			return fmt.Errorf("failed to shut down within ShutdownGracePeriod")
 		}
 	}

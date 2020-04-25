@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v7"
 	"github.com/gofrs/uuid"
 
 	. "github.com/onsi/ginkgo"
@@ -77,17 +77,18 @@ var _ = Describe("Consumer", func() {
 	scheduleJobs := func(jobs []*Job, at time.Time) {
 		var err error
 		hashData := map[string]interface{}{}
-		jobEntries := make([]redis.Z, len(jobs))
+		jobEntries := make([]*redis.Z, len(jobs))
 		for idx, job := range jobs {
 			msg, err := job.message()
 			Expect(err).NotTo(HaveOccurred())
 
 			hashData[job.ID] = msg
-			jobEntries[idx] = redis.Z{
+			jobEntries[idx] = &redis.Z{
 				Score:  float64(at.Unix()),
 				Member: job.ID,
 			}
 		}
+		consumer.opts.Logger.Info(jobEntries)
 
 		err = client.HMSet(consumer.queue.jobDataHash, hashData).Err()
 		Expect(err).NotTo(HaveOccurred())
@@ -116,7 +117,7 @@ var _ = Describe("Consumer", func() {
 	}
 
 	registerConsumer := func(consumer *Consumer, at time.Time) {
-		err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+		err := client.ZAdd(consumer.queue.consumersSet, &redis.Z{
 			Score:  float64(at.Unix()),
 			Member: consumer.inflightSet,
 		}).Err()
@@ -501,6 +502,29 @@ var _ = Describe("Consumer", func() {
 				cancel()
 				Eventually(errors).Should(Receive(HaveOccurred()))
 				close(block)
+			})
+
+			It("Does not continue to make requests after a forced shutdown", func() {
+				block := make(chan struct{})
+
+				consumer.opts.ShutdownGracePeriod = 1 * time.Second
+
+				inflight, stopPollingInflight := inflightJobsPoller(consumer)
+				defer close(stopPollingInflight)
+
+				cancel, errors := start(func(ctx context.Context, job Job) error {
+					block <- struct{}{}
+					<-block
+					return nil
+				})
+
+				enqueueJobs(createJobs(1, 0))
+				<-block
+				cancel()
+				Eventually(errors).Should(Receive(HaveOccurred()))
+				close(block)
+
+				Consistently(inflight, 3*time.Second).ShouldNot(Receive(Equal([]interface{}{})))
 			})
 
 			It("Waits indefinitely for jobs to finish if ShutdownGracePeriod is zero", func() {
@@ -1019,7 +1043,7 @@ var _ = Describe("Consumer", func() {
 							at = at.Add(-5 * time.Minute)
 						}
 
-						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, &redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -1073,7 +1097,7 @@ var _ = Describe("Consumer", func() {
 						id := fmt.Sprintf("job_id-%d", i)
 						at := time.Now().Add(time.Duration(i) * time.Hour)
 
-						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, &redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -1116,7 +1140,7 @@ var _ = Describe("Consumer", func() {
 						id := fmt.Sprintf("job_id-%d", i)
 						at := time.Now().Add(-10 * time.Minute).Add(time.Duration(i) * time.Minute)
 
-						err := client.ZAdd(consumer.queue.scheduledJobsSet, redis.Z{
+						err := client.ZAdd(consumer.queue.scheduledJobsSet, &redis.Z{
 							Score:  float64(at.Unix()),
 							Member: id,
 						}).Err()
@@ -1463,7 +1487,7 @@ var _ = Describe("Consumer", func() {
 						})
 						otherInflightSets = append(otherInflightSets, c.inflightSet)
 
-						err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+						err := client.ZAdd(consumer.queue.consumersSet, &redis.Z{
 							Score:  float64(time.Now().Unix()),
 							Member: c.inflightSet,
 						}).Err()
@@ -1522,7 +1546,7 @@ var _ = Describe("Consumer", func() {
 							score = time.Now().Add(-consumer.opts.CustodianConsumerTimeout).Add(-consumer.opts.HeartbeatPollInterval).Add(time.Duration(-i) * time.Minute)
 						}
 
-						err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+						err := client.ZAdd(consumer.queue.consumersSet, &redis.Z{
 							Score:  float64(score.Unix()),
 							Member: c.inflightSet,
 						}).Err()
@@ -1744,7 +1768,7 @@ var _ = Describe("Consumer", func() {
 
 			Context("When the consumer was previously registered", func() {
 				BeforeEach(func() {
-					err := client.ZAdd(consumer.queue.consumersSet, redis.Z{
+					err := client.ZAdd(consumer.queue.consumersSet, &redis.Z{
 						Member: consumer.inflightSet,
 						Score:  float64(time.Now().Add(-5 * time.Minute).Unix()),
 					}).Err()
